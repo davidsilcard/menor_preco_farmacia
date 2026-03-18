@@ -1,0 +1,495 @@
+# Super Melhor Preco Farmacia
+
+Este projeto nao e um backend tradicional para interface final. Ele existe para servir dados estruturados de comparacao de medicamentos para uma LLM usar como ferramenta.
+
+O fluxo alvo e:
+
+1. o cliente usa uma aplicacao
+2. a aplicacao envia para uma LLM uma nota fiscal, uma lista de produtos ou uma pergunta livre
+3. a LLM interpreta a intencao do usuario
+4. a LLM consulta esta API como ferramenta
+5. a LLM responde com comparacao de precos, alternativas equivalentes e economia possivel
+
+Em outras palavras: esta API e a camada de dados e comparacao. A experiencia conversacional fica fora dela.
+
+## Objetivo
+
+Permitir que uma LLM responda perguntas como:
+
+- "quanto eu paguei mais caro nestes itens?"
+- "onde encontro este mesmo medicamento mais barato em Jaragua do Sul?"
+- "essa nota fiscal tem algum item que poderia ser comprado em outra farmacia por menos?"
+- "qual farmacia tem o menor preco para este remedio?"
+- "estes dois nomes diferentes sao o mesmo produto?"
+
+## Papel da API no ecossistema
+
+Esta API deve ser tratada como um backend orientado a ferramentas para agentes.
+
+Preco de farmacia depende de regiao. Por isso, o CEP deve sempre acompanhar a consulta da LLM/aplicacao.
+
+Ela nao deve:
+
+- decidir a resposta final em linguagem natural
+- interpretar PDF ou imagem de nota fiscal
+- fazer OCR
+- conduzir a conversa com o usuario
+
+Ela deve:
+
+- armazenar catalogos por farmacia
+- manter snapshots de preco por CEP
+- normalizar produtos
+- associar produtos equivalentes entre farmacias
+- expor consultas objetivas para comparacao
+
+## Arquitetura
+
+O modelo de dados foi desenhado para evitar comparacao por texto puro.
+
+### Entidades principais
+
+- `pharmacies`: cadastro das farmacias monitoradas
+- `source_products`: produto como ele existe na farmacia de origem
+- `canonical_products`: representacao canonica para comparacao entre farmacias
+- `product_matches`: vinculo entre `source_product` e `canonical_product`, com confianca e status de revisao
+- `price_snapshots`: historico de preco, disponibilidade, CEP e origem da coleta
+
+### Principio central
+
+Nunca assumir que dois produtos sao iguais apenas porque o nome parece parecido.
+
+A prioridade de matching e:
+
+1. `EAN/GTIN`
+2. `ANVISA` / `Registro MS`
+3. nome normalizado com atributos estruturados
+4. revisao manual quando o match for fraco
+
+## Como a LLM deve usar a API
+
+A LLM deve converter o pedido do usuario em consultas estruturadas.
+
+O contrato de payload por tipo de entrada esta em:
+
+- `contrato-entradas-multimodais.md`
+
+### Exemplo 1: nota fiscal
+
+Entrada do usuario:
+
+- foto de nota fiscal
+- PDF de cupom
+- texto copiado da nota
+
+Fluxo esperado:
+
+1. OCR ou parser da aplicacao extrai nomes, quantidades e valores
+2. a LLM identifica quais itens parecem medicamentos ou produtos comparaveis
+3. a LLM consulta esta API para localizar produtos canonicos equivalentes
+4. a LLM compara com os ultimos precos disponiveis por farmacia
+5. a LLM responde com economia potencial
+
+### Exemplo 2: lista de compras
+
+Entrada do usuario:
+
+- "dipirona 1g 10 comprimidos, ibuprofeno 600mg, vitamina c"
+
+Fluxo esperado:
+
+1. a LLM quebra a lista em itens
+2. consulta os produtos e ofertas por produto canonico
+3. consolida menor preco por farmacia
+4. devolve a recomendacao
+
+### Exemplo 3: pergunta livre
+
+Entrada do usuario:
+
+- "a novalgina infantil esta mais barata na Panvel ou na Drogasil?"
+
+Fluxo esperado:
+
+1. a LLM encontra o produto canonico relevante
+2. consulta as ofertas ativas
+3. responde com farmacia, preco, confianca do match e observacoes
+
+## Estrutura do projeto
+
+- `src/core/`: configuracoes globais
+- `src/models/`: modelos SQLAlchemy
+- `src/services/`: regras de matching e logica de dominio
+- `src/scrapers/`: scrapers por farmacia
+- `src/main.py`: API FastAPI
+- `src/init_db.py`: reset e criacao do banco
+
+## Farmacias atuais
+
+- Panvel
+- FarmaSesi
+- Sao Joao
+- Farmacia Jaragua
+- Drogasil
+- Droga Raia
+- Drogaria Sao Paulo
+- Drogaria Catarinense
+- Preco Popular
+
+Todas sao coletadas para o CEP de Jaragua do Sul configurado em `.env`.
+
+## Campos que importam para cruzamento
+
+O sistema tenta capturar, sempre que possivel:
+
+- `source_sku`
+- `source_url`
+- `raw_name`
+- `normalized_name`
+- `brand`
+- `manufacturer`
+- `active_ingredient`
+- `dosage`
+- `presentation`
+- `pack_size`
+- `ean_gtin`
+- `anvisa_code`
+- `price`
+- `availability`
+- `promotion_text`
+- `source_metadata`
+
+Sem esses campos, a comparacao vira heuristica fraca. O foco do projeto e justamente evitar isso.
+
+## Endpoints atuais
+
+### Status e catalogo
+
+- `GET /`
+- `GET /products`
+- `GET /prices/{source_product_id}`
+- `GET /canonical-products`
+
+### Qualidade de matching
+
+- `GET /matching/review`
+
+Retorna produtos cujo match ainda precisa de revisao.
+
+### Comparacao entre farmacias
+
+- `GET /comparison/canonical-products`
+- `GET /comparison/canonical/{canonical_product_id}`
+
+Esses endpoints sao os mais importantes para a LLM quando a pergunta do usuario e comparativa.
+
+### Tool endpoints para LLM
+
+- `GET /tool/search-products?query=...`
+- `GET /tool/search-products?query=...&cep=...`
+- `POST /tool/compare-shopping-list`
+- `POST /tool/compare-invoice-items`
+- `POST /tool/compare-receipt`
+- `POST /tool/search-observed-item`
+
+Esses endpoints ja sao pensados para uso por agente, sem depender de uma interface humana.
+Eles tambem aceitam entradas mais sujas, como abreviacoes, nomes parciais e codigos `EAN/GTIN`.
+
+Todos eles retornam o mesmo envelope:
+
+```json
+{
+  "tool_name": "compare_invoice_items",
+  "input": {},
+  "confidence": 0.3,
+  "warnings": [],
+  "result": {}
+}
+```
+
+Exemplos de consultas que devem funcionar melhor agora:
+
+- `GET /tool/search-products?query=novalg inf 100ml&cep=89254300`
+- `GET /tool/search-products?query=dip sod 1g 10 cpr medley&cep=89254300`
+- `GET /tool/search-products?query=7891058464073&cep=89254300`
+
+### Busca por foto da caixa
+
+Se a aplicacao fizer OCR da caixa do remedio, pode enviar os textos observados para:
+
+```json
+POST /tool/search-observed-item
+{
+  "cep": "89254300",
+  "source_type": "box_photo",
+  "observations": [
+    "Novalgina infantil dipirona 100ml",
+    "solucao oral",
+    "seringa dosadora",
+    "lote 12345",
+    "validade 12/2027"
+  ]
+}
+```
+
+O endpoint tenta ignorar ruido comum de embalagem, como lote e validade.
+
+## Exemplo de resposta util para LLM
+
+Um endpoint de comparacao retorna algo neste estilo:
+
+```json
+{
+  "canonical_product_id": 2,
+  "canonical_name": "NOVALGINA INFANTIL DIPIRONA PARA FEBRE E DOR SERINGA SOLUCAO ORAL 100ML",
+  "ean_gtin": "7891058464073",
+  "offers": [
+    {
+      "pharmacy": "Drogasil",
+      "price": 39.99,
+      "match_type": "ean_gtin",
+      "match_confidence": 1.0,
+      "review_status": "auto_approved"
+    },
+    {
+      "pharmacy": "Panvel",
+      "price": 48.44,
+      "match_type": "new_canonical",
+      "match_confidence": 0.0,
+      "review_status": "new"
+    }
+  ]
+}
+```
+
+A LLM pode usar isso para responder:
+
+- qual farmacia esta mais barata
+- qual a diferenca de preco
+- se o match e confiavel ou ainda precisa cuidado
+
+## Instalacao
+
+```bash
+uv sync
+uv run playwright install firefox
+```
+
+## Configuracao
+
+Configure `.env` com:
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `DB_HOST`
+- `DB_PORT`
+- `CEP`
+- `PORT`
+- `PANVEL_SEARCH_TERMS`
+- `FARMASESI_SEARCH_TERMS`
+- `SAO_JOAO_SEARCH_TERMS`
+- `FARMACIA_JARAGUA_SEARCH_TERMS`
+- `DROGASIL_SEARCH_TERMS`
+- `CATARINENSE_SEARCH_TERMS`
+- `PRECO_POPULAR_SEARCH_TERMS`
+- `DROGA_RAIA_SEARCH_TERMS`
+- `DROGARIA_SAO_PAULO_SEARCH_TERMS`
+
+Exemplo:
+
+```env
+POSTGRES_DB=precos-farmacia
+POSTGRES_USER=admin
+POSTGRES_PASSWORD=senha
+DB_HOST=127.0.0.1
+DB_PORT=5432
+CEP=89254300
+PORT=8001
+PANVEL_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+FARMASESI_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+SAO_JOAO_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+FARMACIA_JARAGUA_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+DROGASIL_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+CATARINENSE_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+PRECO_POPULAR_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+DROGA_RAIA_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+DROGARIA_SAO_PAULO_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+```
+
+## Reset e carga inicial
+
+Nesta fase inicial de arquitetura, o banco e recriado do zero.
+
+```bash
+uv run python -m src.init_db
+```
+
+Isso remove o schema `public`, recria as tabelas e cadastra as farmacias iniciais.
+
+Importante:
+
+- o `CEP` do `.env` define o contexto em que os scrapers coletam os precos
+- a LLM/aplicacao deve informar o mesmo CEP em todas as consultas
+- se o cliente pedir outro CEP, os scrapers precisam ser executados novamente para esse CEP
+
+## Coleta
+
+### Panvel
+
+```bash
+uv run python -m src.scrapers.panvel
+```
+
+### FarmaSesi
+
+```bash
+uv run python -m src.scrapers.farmasesi
+```
+
+### Sao Joao
+
+```bash
+uv run python -m src.scrapers.sao_joao
+```
+
+### Farmacia Jaragua
+
+```bash
+uv run python -m src.scrapers.farmacia_jaragua
+```
+
+### Drogasil
+
+```bash
+uv run python -m src.scrapers.drogasil
+```
+
+### Droga Raia
+
+```bash
+uv run python -m src.scrapers.droga_raia
+```
+
+### Drogaria Sao Paulo
+
+```bash
+uv run python -m src.scrapers.drogaria_sao_paulo
+```
+
+### Drogaria Catarinense
+
+```bash
+uv run python -m src.scrapers.drogaria_catarinense
+```
+
+### Preco Popular
+
+```bash
+uv run python -m src.scrapers.preco_popular
+```
+
+## API
+
+```bash
+uv run python -m src.main
+```
+
+Por padrao:
+
+- `http://127.0.0.1:8000`
+
+Ou a porta definida por `PORT`.
+
+## Testes
+
+Os testes atuais focam nas funcoes de busca e nos envelopes de tool use:
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
+## Como integrar isso como MCP
+
+Este repositorio agora tem duas formas de integracao:
+
+1. API HTTP em `src.main`
+2. servidor MCP por `stdio` em `src.mcp_server`
+
+O MCP pode ser usado diretamente por clientes que falam o protocolo. A API HTTP continua util para integracoes customizadas.
+
+### Subindo o servidor MCP
+
+```bash
+uv run python -m src.mcp_server
+```
+
+### Tools expostas pelo MCP
+
+- `search_products`
+- `compare_shopping_list`
+- `compare_invoice_items`
+- `compare_canonical_product`
+- `list_review_matches`
+
+### Exemplo de uso em cliente MCP
+
+O cliente deve configurar este comando de `stdio`:
+
+```bash
+uv run python -m src.mcp_server
+```
+
+### Alternativa HTTP
+
+Se preferir nao usar MCP nativo, a API HTTP ainda pode ser exposta para uma LLM de tres formas:
+
+1. um MCP server externo chama esta API e expoe tools
+2. a aplicacao da LLM chama esta API diretamente como tool HTTP
+3. um orquestrador converte intents da LLM em chamadas REST
+
+### Ferramentas MCP recomendadas
+
+Se for embrulhar isso como MCP, as tools mais naturais sao:
+
+- `search_products`
+- `get_product_history`
+- `list_canonical_products`
+- `compare_canonical_product`
+- `compare_shopping_list`
+- `compare_invoice_items`
+- `list_review_matches`
+
+### Exemplo de tool contract
+
+- `compare_canonical_product`
+  - input: `canonical_product_id`
+  - output: ofertas atuais por farmacia, menor preco, confianca do matching
+
+- `search_products`
+  - input: `query`
+  - output: produtos de origem e possiveis produtos canonicos relacionados
+
+- `compare_shopping_list`
+  - input: lista de itens em texto
+  - output: melhor oferta por item e comparacao entre farmacias
+
+- `compare_invoice_items`
+  - input: itens com descricao e preco pago
+  - output: melhor oferta atual e economia potencial por item
+
+## Limites atuais
+
+- OCR de nota fiscal ainda nao faz parte deste repositorio
+- parser de lista do usuario ainda nao faz parte deste repositorio
+- matching por nome ainda precisa revisao em alguns casos
+- cobertura de farmacias ainda esta no inicio
+- o CEP da Drogasil esta em modo best effort; o ideal e endurecer esse fluxo conforme o site evoluir
+
+## Proximos passos recomendados
+
+1. adicionar endpoint de busca semantica/estruturada por item de lista
+2. criar endpoint para comparar uma lista inteira de produtos
+3. adicionar revisao manual assistida para matches fracos
+4. ampliar cobertura para novas farmacias
+5. criar um adaptador MCP dedicado sobre a API
