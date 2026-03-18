@@ -42,6 +42,25 @@ class ProductMatcher:
             same_dosage = self._normalized(candidate.dosage) == self._normalized(dosage)
             same_pack = self._normalized(candidate.pack_size) == self._normalized(pack_size)
             same_presentation = self._presentation_compatible(candidate.presentation, presentation)
+            if not self._is_anchored(candidate):
+                anchored_alternative = self._best_anchored_candidate(
+                    normalized_name=normalized_name,
+                    brand=brand,
+                    dosage=dosage,
+                    presentation=presentation,
+                    pack_size=pack_size,
+                    exclude_ids={candidate.id} if getattr(candidate, "id", None) else None,
+                )
+
+                if anchored_alternative:
+                    best_score, best_candidate = anchored_alternative
+                    return MatchDecision(
+                        best_candidate,
+                        "anchored_structured_match",
+                        round(best_score, 2),
+                        "auto_approved",
+                        "Canonical ancorado por identificador forte prevaleceu sobre candidato legado sem identificador.",
+                    )
 
             if same_brand and same_dosage and same_pack and same_presentation:
                 if self._is_anchored(candidate):
@@ -223,6 +242,21 @@ class ProductMatcher:
         if best_score - second_score < 0.05:
             return [item for item in ranked if abs(item[0] - best_score) < 0.05]
         return [ranked[0]]
+
+    def _best_anchored_candidate(self, normalized_name, brand, dosage, presentation, pack_size, exclude_ids=None):
+        exclude_ids = exclude_ids or set()
+        ranked = self._rank_structured_candidates(normalized_name, brand, dosage, presentation, pack_size)
+        anchored = [
+            item
+            for item in ranked
+            if self._is_anchored(item[1]) and getattr(item[1], "id", None) not in exclude_ids
+        ]
+        if len(anchored) != 1:
+            return None
+        best_score, _ = anchored[0]
+        if best_score < 0.72:
+            return None
+        return anchored[0]
 
     def _dosage_compatible(self, candidate, source):
         candidate_norm = self._normalized(candidate)

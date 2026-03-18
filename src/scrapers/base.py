@@ -39,7 +39,7 @@ class BaseScraper:
     def extract_structured_fields(raw_name: str) -> dict:
         normalized = BaseScraper.normalize_text(raw_name)
 
-        dosage_match = re.search(r"(\d+[.,]?\d*\s?(mg|mcg|g|ml|ui))", normalized, re.IGNORECASE)
+        dosage_match = re.search(r"(\d+[.,]?\d*\s?(?:mg|mcg|g|ui)(?:/\s?\d+[.,]?\d*\s?ml)?)", normalized, re.IGNORECASE)
         pack_match = re.search(r"(\d+\s?(comprimidos?|capsulas?|caps|ml|unidades?|saches?|ampolas?))", normalized, re.IGNORECASE)
 
         presentation = None

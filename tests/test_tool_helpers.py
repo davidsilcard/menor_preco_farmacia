@@ -162,6 +162,11 @@ class ToolHelperTests(unittest.TestCase):
         self.assertIsNone(BaseScraper.clean_identifier("9991234567890"))
         self.assertIsNone(BaseScraper.clean_identifier("0001234567890"))
 
+    def test_extract_structured_fields_does_not_treat_volume_only_as_dosage(self):
+        fields = BaseScraper.extract_structured_fields("Novalgina Gotas 20ml")
+        self.assertIsNone(fields["dosage"])
+        self.assertEqual(fields["pack_size"], "20ml")
+
     def test_matcher_auto_approves_structured_match_when_canonical_is_anchored(self):
         canonical = CanonicalProduct(
             canonical_name="Novalgina 1g 10 Comprimidos",
@@ -194,6 +199,41 @@ class ToolHelperTests(unittest.TestCase):
         matcher = ProductMatcher(_FakeSession([]))
         self.assertTrue(matcher._presentation_compatible("comprimidos", "comprimido"))
         self.assertTrue(matcher._presentation_compatible("gota", "gotas"))
+
+    def test_matcher_prefers_anchored_candidate_over_legacy_unanchored_exact_name(self):
+        legacy = CanonicalProduct(
+            id=1,
+            canonical_name="Novalgina Gotas 20ml",
+            normalized_name="novalgina gotas 20ml",
+            presentation="gotas",
+            pack_size="20ml",
+        )
+        anchored = CanonicalProduct(
+            id=2,
+            canonical_name="Analgésico e Antitérmico Novalgina 500mg/ml Dipirona 20ml Gotas",
+            normalized_name="analgesico e antitermico novalgina 500mg/ml dipirona 20ml gotas",
+            dosage="500mg",
+            presentation="gotas",
+            pack_size="20ml",
+            ean_gtin="7891058000165",
+        )
+        matcher = ProductMatcher(_FakeSession([legacy, anchored]))
+
+        decision = matcher.match_source_product(
+            {
+                "normalized_name": "novalgina gotas 20ml",
+                "brand": None,
+                "dosage": "500mg",
+                "presentation": "gotas",
+                "pack_size": "20ml",
+                "ean_gtin": None,
+                "anvisa_code": None,
+            }
+        )
+
+        self.assertEqual(decision.match_type, "anchored_structured_match")
+        self.assertEqual(decision.review_status, "auto_approved")
+        self.assertEqual(decision.canonical_product, anchored)
 
 
 if __name__ == "__main__":
