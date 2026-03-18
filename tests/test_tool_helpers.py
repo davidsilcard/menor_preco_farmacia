@@ -46,6 +46,8 @@ class ToolHelperTests(unittest.TestCase):
     def test_build_price_summary_returns_totals(self):
         items = [
             {
+                "match_found": True,
+                "requested_item": "novalgina 1g",
                 "paid_price": 20.0,
                 "quantity": 2,
                 "potential_savings": 5.0,
@@ -61,6 +63,34 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(summary["total_best_available"], 35.0)
         self.assertEqual(summary["total_potential_savings"], 5.0)
         self.assertEqual(summary["best_basket_pharmacy"]["pharmacy"], "Panvel")
+        self.assertEqual(summary["matched_items"], 1)
+        self.assertEqual(summary["unmatched_items"], 0)
+
+    def test_build_price_summary_excludes_incomplete_single_pharmacy_totals(self):
+        items = [
+            {
+                "match_found": True,
+                "requested_item": "novalgina 1g",
+                "quantity": 1,
+                "best_offer": {"price": 10.0},
+                "offers": [
+                    {"pharmacy": "Panvel", "price": 10.0},
+                    {"pharmacy": "Drogasil", "price": 11.0},
+                ],
+            },
+            {
+                "match_found": True,
+                "requested_item": "dipirona gotas",
+                "quantity": 1,
+                "best_offer": {"price": 8.0},
+                "offers": [
+                    {"pharmacy": "Panvel", "price": 8.0},
+                ],
+            },
+        ]
+        summary = _build_price_summary(items)
+        self.assertEqual(summary["estimated_totals_by_pharmacy"], {"Panvel": 18.0})
+        self.assertIn("Drogasil", summary["unavailable_items_by_pharmacy"])
 
     def test_estimate_overall_confidence_averages_matched_items(self):
         confidence = _estimate_overall_confidence(

@@ -53,24 +53,28 @@ class ProductMatcher:
                 "Nome normalizado bateu, mas atributos estruturados nao fecharam completamente.",
             )
 
-        attribute_candidates = []
-        for candidate in self.session.query(CanonicalProduct).all():
-            if not self._name_compatible(candidate.normalized_name, normalized_name):
-                continue
-            if self._normalized(candidate.pack_size) != self._normalized(pack_size):
-                continue
-            if not self._presentation_compatible(candidate.presentation, presentation):
-                continue
-            if not self._dosage_compatible(candidate.dosage, dosage):
-                continue
-            attribute_candidates.append(candidate)
+        attribute_candidates = self._rank_structured_candidates(
+            normalized_name=normalized_name,
+            brand=brand,
+            dosage=dosage,
+            presentation=presentation,
+            pack_size=pack_size,
+        )
         if len(attribute_candidates) == 1:
             return MatchDecision(
-                attribute_candidates[0],
+                attribute_candidates[0][1],
                 "structured_name_similarity",
-                0.72,
+                round(attribute_candidates[0][0], 2),
                 "needs_review",
                 "Nome proximo e atributos estruturados bateram; conferir identificadores da origem.",
+            )
+        if len(attribute_candidates) > 1:
+            return MatchDecision(
+                None,
+                "ambiguous_structured_match",
+                0.0,
+                "needs_review",
+                "Mais de um candidato estruturado forte encontrado; revisar manualmente.",
             )
 
         return MatchDecision(
@@ -166,6 +170,41 @@ class ProductMatcher:
         smaller, larger = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
         overlap = smaller.intersection(larger)
         return len(overlap) >= 2 and overlap == smaller
+
+    def _rank_structured_candidates(self, normalized_name, brand, dosage, presentation, pack_size):
+        ranked = []
+        for candidate in self.session.query(CanonicalProduct).all():
+            if not self._name_compatible(candidate.normalized_name, normalized_name):
+                continue
+            if self._normalized(candidate.pack_size) != self._normalized(pack_size):
+                continue
+            if not self._presentation_compatible(candidate.presentation, presentation):
+                continue
+            if not self._dosage_compatible(candidate.dosage, dosage):
+                continue
+
+            score = 0.72
+            if self._normalized(candidate.brand) == self._normalized(brand) and self._normalized(brand):
+                score += 0.08
+            if self._normalized(candidate.dosage) == self._normalized(dosage) and self._normalized(dosage):
+                score += 0.08
+            if self._normalized(candidate.presentation) == self._normalized(presentation) and self._normalized(presentation):
+                score += 0.06
+
+            ranked.append((min(score, 0.94), candidate))
+
+        if not ranked:
+            return []
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        best_score = ranked[0][0]
+        if len(ranked) == 1:
+            return ranked
+
+        second_score = ranked[1][0]
+        if best_score - second_score < 0.05:
+            return [item for item in ranked if abs(item[0] - best_score) < 0.05]
+        return [ranked[0]]
 
     def _dosage_compatible(self, candidate, source):
         candidate_norm = self._normalized(candidate)

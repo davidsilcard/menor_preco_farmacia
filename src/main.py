@@ -371,20 +371,38 @@ def _estimate_overall_confidence(items: list[dict]):
 
 def _build_price_summary(items: list[dict]):
     total_paid = round(sum((item.get("paid_price") or 0) * (item.get("quantity") or 1) for item in items), 2)
+    matched_items = [item for item in items if item.get("match_found") and item.get("offers")]
     total_best_price = round(
-        sum((item.get("best_offer", {}).get("price") or 0) * (item.get("quantity") or 1) for item in items if item.get("best_offer")),
+        sum((item.get("best_offer", {}).get("price") or 0) * (item.get("quantity") or 1) for item in matched_items if item.get("best_offer")),
         2,
     )
     total_potential_savings = round(sum(item.get("potential_savings") or 0 for item in items), 2)
 
-    pharmacy_totals = {}
-    for item in items:
-        quantity = item.get("quantity") or 1
-        for offer in item.get("offers", []):
-            pharmacy_totals.setdefault(offer["pharmacy"], 0)
-            pharmacy_totals[offer["pharmacy"]] += round(offer["price"] * quantity, 2)
+    candidate_pharmacies = sorted(
+        {
+            offer["pharmacy"]
+            for item in matched_items
+            for offer in item.get("offers", [])
+        }
+    )
 
-    pharmacy_totals = {key: round(value, 2) for key, value in pharmacy_totals.items()}
+    pharmacy_totals = {}
+    unavailable_by_pharmacy = {}
+    for pharmacy in candidate_pharmacies:
+        total = 0.0
+        unavailable_items = []
+        for item in matched_items:
+            quantity = item.get("quantity") or 1
+            offer = next((offer for offer in item.get("offers", []) if offer["pharmacy"] == pharmacy), None)
+            if not offer:
+                unavailable_items.append(item.get("requested_item") or item.get("invoice_item"))
+                continue
+            total += offer["price"] * quantity
+        if unavailable_items:
+            unavailable_by_pharmacy[pharmacy] = unavailable_items
+            continue
+        pharmacy_totals[pharmacy] = round(total, 2)
+
     best_basket_pharmacy = None
     if pharmacy_totals:
         best_name = min(pharmacy_totals, key=pharmacy_totals.get)
@@ -394,8 +412,19 @@ def _build_price_summary(items: list[dict]):
         "total_paid_informed": total_paid,
         "total_best_available": total_best_price,
         "total_potential_savings": total_potential_savings,
+        "matched_items": len(matched_items),
+        "unmatched_items": len([item for item in items if not item.get("match_found")]),
         "estimated_totals_by_pharmacy": pharmacy_totals,
+        "unavailable_items_by_pharmacy": unavailable_by_pharmacy,
         "best_basket_pharmacy": best_basket_pharmacy,
+    }
+
+
+def _build_basket_result(items: list[dict]):
+    summary = _build_price_summary(items)
+    return {
+        "items": items,
+        "summary": summary,
     }
 
 
@@ -535,7 +564,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
     _validate_cep_context(payload.cep)
     latest_prices = _build_latest_price_map(db)
     comparisons = []
-    max_score = 0
+    scores = []
 
     for item in payload.items:
         matches = _find_matching_canonicals(db, item, limit=1)
@@ -550,12 +579,13 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
             continue
 
         score, canonical_product = matches[0]
-        max_score = max(max_score, score)
+        scores.append(score)
         offers = _canonical_offer_payload(canonical_product, latest_prices)
         comparisons.append(
             {
                 "requested_item": item,
                 "match_found": True,
+                "quantity": 1,
                 "score": score,
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
@@ -568,16 +598,25 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
     warnings = []
     if unmatched_count:
         warnings.append(f"{unmatched_count} item(ns) da lista nao tiveram match.")
-    if comparisons and max_score < 50:
+    if any(item.get("match_found") and item.get("score", 0) < 50 for item in comparisons):
         warnings.append("Alguns matches da lista tem baixa confianca.")
+    if comparisons and not _build_price_summary(comparisons)["best_basket_pharmacy"]:
+        warnings.append("Nenhuma farmacia unica cobre toda a cesta atual.")
 
     return _tool_response(
         "compare_shopping_list",
         payload.model_dump(),
-        {"items": comparisons},
-        min(max_score / 100, 1.0) if comparisons else 0.0,
+        _build_basket_result(comparisons),
+        min((sum(scores) / len(scores)) / 100, 1.0) if scores else 0.0,
         warnings,
     )
+
+
+@app.post("/tool/compare-basket")
+def tool_compare_basket(payload: ShoppingListRequest = Body(...), db: Session = Depends(get_db)):
+    result = tool_compare_shopping_list(payload, db)
+    result["tool_name"] = "compare_basket"
+    return result
 
 
 @app.post("/tool/compare-invoice-items")
@@ -667,7 +706,7 @@ def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Sess
         {
             "merchant_name": payload.merchant_name,
             "captured_at": payload.captured_at,
-            "items": items,
+            **_build_basket_result(items),
             "summary": summary,
         },
         _estimate_overall_confidence(items),
