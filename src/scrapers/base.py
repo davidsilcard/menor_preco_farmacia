@@ -25,6 +25,17 @@ class BaseScraper:
         return normalized
 
     @staticmethod
+    def clean_identifier(value: str | None, valid_lengths: tuple[int, ...] = (8, 12, 13, 14)) -> str | None:
+        if value is None:
+            return None
+        digits = re.sub(r"\D", "", str(value))
+        if len(digits) not in valid_lengths:
+            return None
+        if digits.startswith(("000", "999")):
+            return None
+        return digits or None
+
+    @staticmethod
     def extract_structured_fields(raw_name: str) -> dict:
         normalized = BaseScraper.normalize_text(raw_name)
 

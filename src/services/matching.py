@@ -41,8 +41,17 @@ class ProductMatcher:
             same_brand = self._normalized(candidate.brand) == self._normalized(brand)
             same_dosage = self._normalized(candidate.dosage) == self._normalized(dosage)
             same_pack = self._normalized(candidate.pack_size) == self._normalized(pack_size)
+            same_presentation = self._presentation_compatible(candidate.presentation, presentation)
 
-            if same_brand and same_dosage and same_pack:
+            if same_brand and same_dosage and same_pack and same_presentation:
+                if self._is_anchored(candidate):
+                    return MatchDecision(
+                        candidate,
+                        "anchored_normalized_name",
+                        0.96,
+                        "auto_approved",
+                        "Nome e atributos estruturados fecharam contra canonical ja ancorado por identificador forte.",
+                    )
                 return MatchDecision(candidate, "normalized_name_strict", 0.9, "needs_review")
 
             return MatchDecision(
@@ -61,10 +70,19 @@ class ProductMatcher:
             pack_size=pack_size,
         )
         if len(attribute_candidates) == 1:
+            best_score, best_candidate = attribute_candidates[0]
+            if best_score >= 0.84 and self._is_anchored(best_candidate):
+                return MatchDecision(
+                    best_candidate,
+                    "anchored_structured_match",
+                    round(best_score, 2),
+                    "auto_approved",
+                    "Match estruturado contra canonical ja ancorado por identificador forte.",
+                )
             return MatchDecision(
-                attribute_candidates[0][1],
+                best_candidate,
                 "structured_name_similarity",
-                round(attribute_candidates[0][0], 2),
+                round(best_score, 2),
                 "needs_review",
                 "Nome proximo e atributos estruturados bateram; conferir identificadores da origem.",
             )
@@ -214,11 +232,34 @@ class ProductMatcher:
         return candidate_norm == source_norm
 
     def _presentation_compatible(self, candidate, source):
-        candidate_norm = self._normalized(candidate)
-        source_norm = self._normalized(source)
+        candidate_norm = self._presentation_key(candidate)
+        source_norm = self._presentation_key(source)
         if not candidate_norm or not source_norm:
             return True
         return candidate_norm == source_norm
+
+    @staticmethod
+    def _is_anchored(candidate: CanonicalProduct):
+        return bool(candidate.ean_gtin or candidate.anvisa_code)
+
+    @classmethod
+    def _presentation_key(cls, value):
+        normalized = cls._normalized(value)
+        if not normalized:
+            return normalized
+        if "comprim" in normalized:
+            return "comprimido"
+        if "caps" in normalized:
+            return "capsula"
+        if "gota" in normalized:
+            return "gotas"
+        if "solucao" in normalized:
+            return "solucao"
+        if "supositorio" in normalized:
+            return "supositorio"
+        if "xarope" in normalized:
+            return "xarope"
+        return normalized
 
     @classmethod
     def _significant_tokens(cls, value):

@@ -88,31 +88,94 @@ class FarmaSesiScraper(BaseScraper):
         soup = BeautifulSoup(html, "html.parser")
         body_text = soup.get_text(" ", strip=True)
         normalized_body = self.normalize_text(body_text)
+        product_schema = self._extract_product_schema(soup)
 
-        brand = None
-        brand_match = re.search(r"productBrand['\"]?\s*:\s*['\"]([^'\"]+)['\"]", html, re.I)
-        if brand_match:
-            brand = brand_match.group(1).strip()
+        brand = self._extract_brand(product_schema, html, normalized_body)
+        manufacturer = self._extract_labeled_value(normalized_body, "fabricante|laboratorio|industria")
+        active_ingredient = self._extract_labeled_value(normalized_body, "principio ativo|substancia ativa")
+        dosage = self._extract_labeled_value(normalized_body, "dosagem")
+        pack_size = self._extract_labeled_value(normalized_body, "quantidade")
 
         price_match = re.search(r"productPrice['\"]?\s*:\s*['\"](\d+[.,]\d+)['\"]", html, re.I)
         page_price = float(price_match.group(1).replace(",", ".")) if price_match else None
 
-        ean_match = re.search(r"\b(?:ean\.?|ean:|codigo de barras)\D{0,12}(\d{8,14})\b", normalized_body, re.I)
-        anvisa_match = re.search(r"\b(?:registro ms|registro anvisa|anvisa|ms)\D{0,12}(\d{8,13})\b", normalized_body, re.I)
-        active_match = re.search(r"(principio ativo|substancia ativa)\s*[:\-]?\s*([a-z0-9\s,]+)", normalized_body)
-
-        ean_gtin = ean_match.group(1) if ean_match else None
-        if ean_gtin and ean_gtin.startswith("999"):
-            ean_gtin = None
+        ean_gtin = self._extract_ean(product_schema, normalized_body)
+        anvisa_code = self._extract_anvisa_code(normalized_body)
 
         return {
             "brand": brand,
-            "manufacturer": brand,
-            "active_ingredient": active_match.group(2).strip() if active_match else None,
+            "manufacturer": manufacturer or brand,
+            "active_ingredient": active_ingredient,
+            "dosage": dosage,
+            "pack_size": pack_size,
             "ean_gtin": ean_gtin,
-            "anvisa_code": anvisa_match.group(1) if anvisa_match else None,
+            "anvisa_code": anvisa_code,
             "page_price": page_price,
         }
+
+    def _extract_product_schema(self, soup):
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            raw_json = script.string or script.get_text(strip=True)
+            if not raw_json:
+                continue
+            try:
+                payload = json.loads(raw_json)
+            except json.JSONDecodeError:
+                continue
+
+            candidates = payload if isinstance(payload, list) else [payload]
+            for candidate in candidates:
+                if isinstance(candidate, dict) and candidate.get("@type") == "Product":
+                    return candidate
+        return None
+
+    def _extract_brand(self, product_schema, html: str, normalized_body: str):
+        if product_schema:
+            brand = product_schema.get("brand")
+            if isinstance(brand, dict):
+                return brand.get("name")
+            if isinstance(brand, str):
+                return brand
+
+        brand_match = re.search(r"productBrand['\"]?\s*:\s*['\"]([^'\"]+)['\"]", html, re.I)
+        if brand_match:
+            return brand_match.group(1).strip()
+
+        return self._extract_labeled_value(normalized_body, "marca")
+
+    def _extract_ean(self, product_schema, normalized_body: str):
+        if product_schema:
+            for key in ("gtin13", "gtin", "gtin14"):
+                digits = self.clean_identifier(product_schema.get(key))
+                if digits:
+                    return digits
+        match = re.search(r"\b(?:ean\.?|ean:|codigo de barras|gtin)\D{0,16}(\d{8,14})\b", normalized_body, re.I)
+        return self.clean_identifier(match.group(1)) if match else None
+
+    def _extract_anvisa_code(self, normalized_body: str):
+        match = re.search(r"\b(?:registro ms|registro anvisa|anvisa|ms)\D{0,20}(\d{8,13})\b", normalized_body, re.I)
+        return match.group(1) if match else None
+
+    def _extract_labeled_value(self, normalized_body: str, label_pattern: str):
+        match = re.search(
+            rf"(?:{label_pattern})\s+([a-z0-9\s\-/,'.]+?)(?=\s+(?:marca|quantidade|principio ativo|substancia ativa|caracteristicas|codigo do produto|fabricante|laboratorio|industria|registro ms|registro anvisa|dosagem|ean|codigo de barras|gtin|$))",
+            normalized_body,
+        )
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _matches_search_term(self, product_data):
+        search_term = ((product_data.get("source_metadata") or {}).get("search_term") or "").strip()
+        normalized_name = product_data.get("normalized_name") or ""
+        if not search_term or not normalized_name:
+            return True
+
+        term_tokens = [token for token in self.normalize_text(search_term).split() if len(token) >= 4]
+        if not term_tokens:
+            return True
+
+        return any(token in normalized_name for token in term_tokens)
 
     def scrape(self):
         all_products = []
@@ -143,6 +206,8 @@ class FarmaSesiScraper(BaseScraper):
                     "brand": detail_fields.get("brand"),
                     "manufacturer": detail_fields.get("manufacturer"),
                     "active_ingredient": detail_fields.get("active_ingredient"),
+                    "dosage": detail_fields.get("dosage") or structured_fields.get("dosage"),
+                    "pack_size": detail_fields.get("pack_size") or structured_fields.get("pack_size"),
                     "ean_gtin": detail_fields.get("ean_gtin"),
                     "anvisa_code": detail_fields.get("anvisa_code"),
                     "promotion_text": None,
@@ -155,6 +220,8 @@ class FarmaSesiScraper(BaseScraper):
                     },
                 }
 
+                if not self._matches_search_term(product_data):
+                    continue
                 if product_data["source_sku"] in seen_skus:
                     continue
                 seen_skus.add(product_data["source_sku"])

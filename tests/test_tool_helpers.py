@@ -11,6 +11,38 @@ from src.main import (
     _tokenize_search_text,
     _tool_response,
 )
+from src.models.base import CanonicalProduct
+from src.scrapers.base import BaseScraper
+from src.services.matching import ProductMatcher
+
+
+class _FakeQuery:
+    def __init__(self, items):
+        self.items = list(items)
+
+    def filter_by(self, **kwargs):
+        filtered = [
+            item
+            for item in self.items
+            if all(getattr(item, key) == value for key, value in kwargs.items())
+        ]
+        return _FakeQuery(filtered)
+
+    def first(self):
+        return self.items[0] if self.items else None
+
+    def all(self):
+        return list(self.items)
+
+
+class _FakeSession:
+    def __init__(self, canonicals):
+        self.canonicals = canonicals
+
+    def query(self, model):
+        if model is CanonicalProduct:
+            return _FakeQuery(self.canonicals)
+        raise AssertionError(f"Unexpected model query: {model}")
 
 
 class ToolHelperTests(unittest.TestCase):
@@ -124,6 +156,44 @@ class ToolHelperTests(unittest.TestCase):
                 "analgesico e antitermico novalgina 500mg/ml dipirona 20ml gotas",
             )
         )
+
+    def test_clean_identifier_discards_known_placeholder_gtins(self):
+        self.assertEqual(BaseScraper.clean_identifier("7891058002565"), "7891058002565")
+        self.assertIsNone(BaseScraper.clean_identifier("9991234567890"))
+        self.assertIsNone(BaseScraper.clean_identifier("0001234567890"))
+
+    def test_matcher_auto_approves_structured_match_when_canonical_is_anchored(self):
+        canonical = CanonicalProduct(
+            canonical_name="Novalgina 1g 10 Comprimidos",
+            normalized_name="novalgina 1g 10 comprimidos",
+            brand="Novalgina",
+            dosage="1g",
+            presentation="comprimido",
+            pack_size="10 comprimidos",
+            ean_gtin="7891058001155",
+        )
+        matcher = ProductMatcher(_FakeSession([canonical]))
+
+        decision = matcher.match_source_product(
+            {
+                "normalized_name": "novalgina 1g 10 comprimidos",
+                "brand": "Novalgina",
+                "dosage": "1g",
+                "presentation": "comprimido",
+                "pack_size": "10 comprimidos",
+                "ean_gtin": None,
+                "anvisa_code": None,
+            }
+        )
+
+        self.assertEqual(decision.match_type, "anchored_normalized_name")
+        self.assertEqual(decision.review_status, "auto_approved")
+        self.assertEqual(decision.canonical_product, canonical)
+
+    def test_matcher_normalizes_presentation_variants(self):
+        matcher = ProductMatcher(_FakeSession([]))
+        self.assertTrue(matcher._presentation_compatible("comprimidos", "comprimido"))
+        self.assertTrue(matcher._presentation_compatible("gota", "gotas"))
 
 
 if __name__ == "__main__":

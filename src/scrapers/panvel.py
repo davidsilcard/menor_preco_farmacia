@@ -139,6 +139,8 @@ class PanvelScraper(BaseScraper):
                 await asyncio.sleep(random.uniform(1, 2))
                 html = await detail_page.content()
                 enriched = self._extract_product_detail(html, product)
+                if not self._matches_search_term(enriched):
+                    return None
                 print(
                     "Detalhe coletado:",
                     enriched["source_sku"],
@@ -176,11 +178,13 @@ class PanvelScraper(BaseScraper):
         normalized_body = self.normalize_text(body_text)
 
         brand = self._extract_brand(product_schema, soup)
-        manufacturer = self._extract_manufacturer(product_schema, soup)
+        manufacturer = self._extract_manufacturer(product_schema, soup) or brand
         active_ingredient = self._extract_active_ingredient(normalized_body)
         ean_gtin = self._extract_ean(product_schema, normalized_body)
         anvisa_code = self._extract_anvisa_code(normalized_body)
         promotion_text = self._extract_promotion_text(normalized_body)
+        detail_dosage = self._extract_labeled_value(soup, "dosagem")
+        detail_pack_size = self._extract_labeled_value(soup, "quantidade")
 
         metadata["json_ld"] = product_schema
         metadata["detail_title"] = raw_name
@@ -192,9 +196,9 @@ class PanvelScraper(BaseScraper):
             "brand": brand,
             "manufacturer": manufacturer,
             "active_ingredient": active_ingredient,
-            "dosage": structured_fields.get("dosage") or product.get("dosage"),
+            "dosage": detail_dosage or structured_fields.get("dosage") or product.get("dosage"),
             "presentation": structured_fields.get("presentation") or product.get("presentation"),
-            "pack_size": structured_fields.get("pack_size") or product.get("pack_size"),
+            "pack_size": detail_pack_size or structured_fields.get("pack_size") or product.get("pack_size"),
             "ean_gtin": ean_gtin,
             "anvisa_code": anvisa_code,
             "promotion_text": promotion_text,
@@ -252,18 +256,16 @@ class PanvelScraper(BaseScraper):
 
     def _extract_ean(self, product_schema, normalized_body):
         if product_schema:
-            for key in ("gtin13", "gtin", "gtin14", "mpn", "sku"):
-                value = product_schema.get(key)
-                if isinstance(value, str):
-                    digits = re.sub(r"\D", "", value)
-                    if len(digits) in (8, 12, 13, 14):
-                        return digits
+            for key in ("gtin13", "gtin", "gtin14"):
+                digits = self.clean_identifier(product_schema.get(key))
+                if digits:
+                    return digits
 
         match = re.search(r"\b(?:ean|codigo de barras|gtin)\D{0,10}(\d{8,14})\b", normalized_body)
-        return match.group(1) if match else None
+        return self.clean_identifier(match.group(1)) if match else None
 
     def _extract_anvisa_code(self, normalized_body):
-        match = re.search(r"\b(?:registro anvisa|anvisa|ms)\D{0,15}(\d{8,13})\b", normalized_body)
+        match = re.search(r"\b(?:registro anvisa|registro ms|anvisa|ms)\D{0,20}(\d{8,13})\b", normalized_body)
         return match.group(1) if match else None
 
     def _extract_active_ingredient(self, normalized_body):
@@ -294,6 +296,18 @@ class PanvelScraper(BaseScraper):
                 return sibling_text
 
         return None
+
+    def _matches_search_term(self, product_data):
+        search_term = ((product_data.get("source_metadata") or {}).get("search_term") or "").strip()
+        normalized_name = product_data.get("normalized_name") or ""
+        if not search_term or not normalized_name:
+            return True
+
+        term_tokens = [token for token in self.normalize_text(search_term).split() if len(token) >= 4]
+        if not term_tokens:
+            return True
+
+        return any(token in normalized_name for token in term_tokens)
 
     def save_to_db(self, products):
         if not products:
