@@ -5,6 +5,7 @@ from src.main import (
     _build_observed_query,
     _build_price_summary,
     _estimate_overall_confidence,
+    _has_special_token_conflict,
     _normalize_cep,
     _normalize_query,
     _tokenize_search_text,
@@ -109,6 +110,20 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(payload["confidence"], 0.2)
         self.assertEqual(payload["warnings"], ["warn"])
         self.assertIn("result", payload)
+
+    def test_special_token_conflict_blocks_wrong_form(self):
+        self.assertTrue(
+            _has_special_token_conflict(
+                "novalgina 1g 10 comprimidos",
+                "novalgina dipirona 1g 10 comprimidos efervescentes",
+            )
+        )
+        self.assertFalse(
+            _has_special_token_conflict(
+                "novalgina gotas 20ml",
+                "analgesico e antitermico novalgina 500mg/ml dipirona 20ml gotas",
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -44,6 +44,20 @@ SEARCH_STOPWORDS = {
     "farmacias",
 }
 
+SEARCH_SPECIAL_TOKENS = {
+    "efervescentes",
+    "efervescente",
+    "gotas",
+    "gota",
+    "supositorio",
+    "supositorios",
+    "solucao",
+    "oral",
+    "flash",
+    "seringa",
+    "infantil",
+}
+
 
 class ShoppingListRequest(BaseModel):
     cep: str
@@ -247,6 +261,28 @@ def _tokenize_search_text(value: str):
     return tokens
 
 
+def _significant_search_tokens(value: str):
+    tokens = _tokenize_search_text(value)
+    stopwords = {
+        "analgesico",
+        "antitermico",
+        "adulto",
+        "para",
+        "de",
+        "e",
+        "monoidratada",
+        "framboesa",
+        "dipirona",
+    }
+    return {token for token in tokens if token not in stopwords}
+
+
+def _has_special_token_conflict(query: str, candidate: str):
+    query_tokens = _significant_search_tokens(query)
+    candidate_tokens = _significant_search_tokens(candidate)
+    return any(((token in query_tokens) != (token in candidate_tokens)) for token in SEARCH_SPECIAL_TOKENS)
+
+
 def _canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: dict):
     offers = []
     for match in canonical_product.matches:
@@ -280,6 +316,9 @@ def _canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices:
 def _score_canonical_match(canonical_product: CanonicalProduct, query: str):
     normalized_query = _normalize_query(query)
     tokens = _tokenize_search_text(query)
+    if _has_special_token_conflict(normalized_query, canonical_product.normalized_name):
+        return 0
+
     source_aliases = " ".join(match.source_product.normalized_name for match in canonical_product.matches if match.source_product)
     haystack = " ".join(
         filter(
@@ -304,6 +343,14 @@ def _score_canonical_match(canonical_product: CanonicalProduct, query: str):
         score += 95
     if canonical_product.normalized_name == normalized_query:
         score += 70
+
+    query_tokens = _significant_search_tokens(normalized_query)
+    candidate_tokens = _significant_search_tokens(canonical_product.normalized_name)
+    overlap = query_tokens.intersection(candidate_tokens)
+    if overlap:
+        score += min(len(overlap) * 12, 36)
+    if query_tokens and overlap == query_tokens:
+        score += 20
 
     for token in tokens:
         if token.isdigit() and len(token) >= 8:
