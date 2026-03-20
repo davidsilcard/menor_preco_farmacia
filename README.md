@@ -354,6 +354,7 @@ CATARINENSE_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
 PRECO_POPULAR_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
 DROGA_RAIA_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
 DROGARIA_SAO_PAULO_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
+ON_DEMAND_ENABLE_BROWSER_SCRAPERS=false
 ```
 
 ## Reset e carga inicial
@@ -467,9 +468,24 @@ uv run python -m src.mcp_server
 
 - `search_products`
 - `compare_shopping_list`
+- `compare_basket`
 - `compare_invoice_items`
+- `compare_receipt`
+- `search_observed_item`
 - `compare_canonical_product`
 - `list_review_matches`
+- `get_search_job`
+- `list_search_jobs`
+
+Observacoes:
+
+- o `cep` e obrigatorio nas tools de busca e comparacao de preco
+- quando a base nao tiver o item, a resposta pode incluir `catalog_request` e `search_job`
+- `search_job` permite polling posterior de fila, posicao e ETA estimado
+- `search_job.status` pode ser `queued`, `processing`, `completed`, `partial_success` ou `failed`
+- `partial_success` significa que a busca terminou, mas uma ou mais farmacias falharam durante a execucao
+- `search_job.warnings` traz avisos estruturados para a LLM, como falha parcial por farmacia ou ausencia total de resultados
+- scrapers baseadas em browser podem ser puladas na busca sob demanda quando `ON_DEMAND_ENABLE_BROWSER_SCRAPERS=false`
 
 ### Exemplo de uso em cliente MCP
 
@@ -496,8 +512,13 @@ Se for embrulhar isso como MCP, as tools mais naturais sao:
 - `list_canonical_products`
 - `compare_canonical_product`
 - `compare_shopping_list`
+- `compare_basket`
 - `compare_invoice_items`
+- `compare_receipt`
+- `search_observed_item`
 - `list_review_matches`
+- `get_search_job`
+- `list_search_jobs`
 
 ### Exemplo de tool contract
 
@@ -506,16 +527,35 @@ Se for embrulhar isso como MCP, as tools mais naturais sao:
   - output: ofertas atuais por farmacia, menor preco, confianca do matching
 
 - `search_products`
-  - input: `query`
-  - output: produtos de origem e possiveis produtos canonicos relacionados
+  - input: `query`, `cep`
+  - output: produtos canonicos, ofertas, `catalog_request` e `search_job` quando nao houver base suficiente
 
 - `compare_shopping_list`
-  - input: lista de itens em texto
-  - output: melhor oferta por item e comparacao entre farmacias
+  - input: `cep` + lista de itens em texto
+  - output: melhor oferta por item, comparacao entre farmacias e jobs para itens ausentes
 
 - `compare_invoice_items`
-  - input: itens com descricao e preco pago
-  - output: melhor oferta atual e economia potencial por item
+  - input: `cep` + itens com descricao e preco pago
+  - output: melhor oferta atual, economia potencial e jobs para itens ausentes
+
+- `get_search_job`
+  - input: `job_id`
+  - output: status da fila, posicao, ETA, warnings estruturados e eventual payload final
+
+### Semantica de search jobs
+
+- `queued`: job aceito e aguardando processamento
+- `processing`: job em execucao
+- `completed`: job concluido sem falha de scraper
+- `partial_success`: job concluido com falha parcial de uma ou mais farmacias
+- `failed`: job falhou antes de produzir um resultado utilizavel
+- `skipped` aparece no resultado por farmacia quando a origem depende de browser e esse runtime nao esta habilitado para busca sob demanda
+
+Warnings estruturados comuns:
+
+- `partial_scraper_failure`: uma ou mais farmacias falharam no processamento
+- `scraper_runtime_unavailable`: parte das farmacias foi pulada por falta de runtime de browser
+- `no_results_found`: a busca foi executada, mas nao encontrou produtos
 
 ## Limites atuais
 

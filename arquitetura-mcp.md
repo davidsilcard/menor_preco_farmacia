@@ -63,3 +63,25 @@ Se a API tentar responder em linguagem natural, ela mistura responsabilidade err
 - matching: cria confianca sobre equivalencia
 - api: expoe fatos estruturados
 - llm: usa fatos estruturados para responder ao usuario
+
+## Jobs assíncronos
+
+Quando a base nao tiver o item, a API/MCP pode devolver um `search_job`.
+
+Estados esperados:
+
+- `queued`
+- `processing`
+- `completed`
+- `partial_success`
+- `failed`
+
+Interpretacao correta:
+
+- `completed`: a busca terminou sem falhas de scraper
+- `partial_success`: a busca terminou, mas parte das farmacias falhou; a LLM deve responder com cautela
+- `failed`: a busca nao produziu resultado confiavel
+
+No detalhe por farmacia, uma origem tambem pode aparecer como `skipped` quando depende de browser e esse runtime nao esta habilitado para a busca sob demanda.
+
+O agente nao deve tratar `partial_success` como erro fatal, mas tambem nao deve responder como se a cobertura estivesse completa.

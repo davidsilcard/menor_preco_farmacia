@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     DROGARIA_SAO_PAULO_SEARCH_TERMS: str = os.getenv(
         "DROGARIA_SAO_PAULO_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno"
     )
+    ON_DEMAND_ENABLE_BROWSER_SCRAPERS: bool = os.getenv("ON_DEMAND_ENABLE_BROWSER_SCRAPERS", "false").lower() == "true"
 
     @property
     def DATABASE_URL(self) -> str:

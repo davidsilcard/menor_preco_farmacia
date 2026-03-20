@@ -4,11 +4,18 @@ from typing import Any
 
 from src.main import (
     InvoiceComparisonRequest,
+    ObservedItemRequest,
+    ReceiptComparisonRequest,
     ShoppingListRequest,
     compare_single_canonical_product,
+    get_search_job,
     list_pending_reviews,
+    list_search_jobs,
+    tool_compare_basket,
     tool_compare_invoice_items,
+    tool_compare_receipt,
     tool_compare_shopping_list,
+    tool_search_observed_item,
     tool_search_products,
 )
 from src.models.base import SessionLocal
@@ -65,8 +72,9 @@ def _tool_definitions():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
+                    "cep": {"type": "string"},
                 },
-                "required": ["query"],
+                "required": ["query", "cep"],
             },
         },
         {
@@ -75,12 +83,28 @@ def _tool_definitions():
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "cep": {"type": "string"},
                     "items": {
                         "type": "array",
                         "items": {"type": "string"},
                     }
                 },
-                "required": ["items"],
+                "required": ["cep", "items"],
+            },
+        },
+        {
+            "name": "compare_basket",
+            "description": "Alias de compare_shopping_list com foco em total da cesta por farmacia.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cep": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["cep", "items"],
             },
         },
         {
@@ -89,6 +113,7 @@ def _tool_definitions():
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "cep": {"type": "string"},
                     "items": {
                         "type": "array",
                         "items": {
@@ -102,7 +127,48 @@ def _tool_definitions():
                         },
                     }
                 },
-                "required": ["items"],
+                "required": ["cep", "items"],
+            },
+        },
+        {
+            "name": "compare_receipt",
+            "description": "Compara uma nota inteira e devolve total, cesta e economia potencial.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cep": {"type": "string"},
+                    "merchant_name": {"type": "string"},
+                    "captured_at": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string"},
+                                "paid_price": {"type": "number"},
+                                "quantity": {"type": "integer"},
+                            },
+                            "required": ["description"],
+                        },
+                    },
+                },
+                "required": ["cep", "items"],
+            },
+        },
+        {
+            "name": "search_observed_item",
+            "description": "Busca um item a partir de observacoes extraidas de OCR, caixa ou texto livre.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cep": {"type": "string"},
+                    "source_type": {"type": "string"},
+                    "observations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["cep", "observations"],
             },
         },
         {
@@ -124,6 +190,25 @@ def _tool_definitions():
                 "properties": {},
             },
         },
+        {
+            "name": "get_search_job",
+            "description": "Consulta o status de um job de busca sob demanda.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "integer"},
+                },
+                "required": ["job_id"],
+            },
+        },
+        {
+            "name": "list_search_jobs",
+            "description": "Lista os jobs de busca sob demanda mais recentes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
     ]
 
 
@@ -139,19 +224,51 @@ def _tool_result(payload: Any):
     }
 
 
+def _require(arguments: dict, field_name: str):
+    if field_name not in arguments or arguments[field_name] in (None, ""):
+        raise ValueError(f"Parametro obrigatorio ausente: {field_name}")
+    return arguments[field_name]
+
+
 def _call_tool(name: str, arguments: dict):
     session = SessionLocal()
     try:
         if name == "search_products":
-            result = tool_search_products(arguments["query"], session)
+            result = tool_search_products(
+                query=_require(arguments, "query"),
+                cep=_require(arguments, "cep"),
+                db=session,
+            )
         elif name == "compare_shopping_list":
-            result = tool_compare_shopping_list(ShoppingListRequest(items=arguments.get("items", [])), session)
+            result = tool_compare_shopping_list(
+                ShoppingListRequest(
+                    cep=_require(arguments, "cep"),
+                    items=arguments.get("items", []),
+                ),
+                session,
+            )
+        elif name == "compare_basket":
+            result = tool_compare_basket(
+                ShoppingListRequest(
+                    cep=_require(arguments, "cep"),
+                    items=arguments.get("items", []),
+                ),
+                session,
+            )
         elif name == "compare_invoice_items":
             result = tool_compare_invoice_items(InvoiceComparisonRequest.model_validate(arguments), session)
+        elif name == "compare_receipt":
+            result = tool_compare_receipt(ReceiptComparisonRequest.model_validate(arguments), session)
+        elif name == "search_observed_item":
+            result = tool_search_observed_item(ObservedItemRequest.model_validate(arguments), session)
         elif name == "compare_canonical_product":
-            result = compare_single_canonical_product(int(arguments["canonical_product_id"]), session)
+            result = compare_single_canonical_product(int(_require(arguments, "canonical_product_id")), session)
         elif name == "list_review_matches":
             result = list_pending_reviews(session)
+        elif name == "get_search_job":
+            result = get_search_job(int(_require(arguments, "job_id")), session)
+        elif name == "list_search_jobs":
+            result = list_search_jobs(session)
         else:
             raise ValueError(f"Tool desconhecida: {name}")
         return _tool_result(result)

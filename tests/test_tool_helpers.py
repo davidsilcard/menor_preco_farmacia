@@ -17,14 +17,21 @@ from src.main import (
     _item_availability_summary,
     _normalize_cep,
     _normalize_query,
+    _ops_health_payload,
+    _pharmacy_metrics,
+    _queue_metrics,
+    _register_catalog_request,
+    _register_search_job,
+    _search_job_payload,
     _score_canonical_match,
     _snapshot_freshness_payload,
     _tokenize_search_text,
     _tool_response,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import PriceSnapshot
+from src.models.base import CatalogRequest, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct
 from src.scrapers.base import BaseScraper
+from src.services.search_jobs import _job_completion_status, _job_warnings
 from src.services.matching import ProductMatcher
 
 
@@ -46,22 +53,86 @@ class _FakeQuery:
     def all(self):
         return list(self.items)
 
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def count(self):
+        return len(self.items)
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def limit(self, value):
+        return _FakeQuery(self.items[:value])
+
+    def filter(self, *conditions):
+        filtered = []
+        for item in self.items:
+            keep = True
+            for condition in conditions:
+                attr_name = getattr(condition.left, "name", None)
+                operator = getattr(condition.operator, "__name__", "")
+                left_value = getattr(item, attr_name, None)
+                if operator == "eq":
+                    expected = getattr(condition.right, "value", condition.right)
+                    if attr_name is None or left_value != expected:
+                        keep = False
+                        break
+                elif operator == "in_op":
+                    expected = list(condition.right.value)
+                    if attr_name is None or left_value not in expected:
+                        keep = False
+                        break
+                else:
+                    raise AssertionError(f"Unsupported filter operator: {operator}")
+            if keep:
+                filtered.append(item)
+        return _FakeQuery(filtered)
+
 
 class _FakeSession:
     def __init__(self, canonicals):
         self.canonicals = canonicals
         self.added = []
+        self.catalog_requests = []
+        self.search_jobs = []
+        self.commits = 0
 
     def query(self, model):
         if model is CanonicalProduct:
             return _FakeQuery(self.canonicals)
+        if model is CatalogRequest:
+            return _FakeQuery(self.catalog_requests)
+        if model is SearchJob:
+            return _FakeQuery(self.search_jobs)
+        if model is ScrapeRun:
+            return _FakeQuery(getattr(self, "scrape_runs", []))
+        if model is SourceProduct:
+            return _FakeQuery(getattr(self, "source_products", []))
+        if model is ProductMatch:
+            return _FakeQuery(getattr(self, "matches", []))
         raise AssertionError(f"Unexpected model query: {model}")
 
     def add(self, instance):
         self.added.append(instance)
+        if isinstance(instance, CatalogRequest):
+            instance.id = len(self.catalog_requests) + 1
+            self.catalog_requests.append(instance)
+        if isinstance(instance, SearchJob):
+            instance.id = len(self.search_jobs) + 1
+            self.search_jobs.append(instance)
 
     def flush(self):
         return None
+
+    def commit(self):
+        self.commits += 1
+
+    def refresh(self, instance):
+        return None
+
+    def count(self):
+        raise AssertionError("count() should be called on _FakeQuery, not session")
 
 
 class ToolHelperTests(unittest.TestCase):
@@ -445,6 +516,166 @@ class ToolHelperTests(unittest.TestCase):
         )
         self.assertGreater(_score_canonical_match(canonical, "7896382709210"), 0)
         self.assertGreater(_score_canonical_match(canonical, "mounjaro 15mg"), 0)
+
+    def test_register_catalog_request_upserts_by_query_and_cep(self):
+        session = _FakeSession([])
+        first = _register_catalog_request(session, "mounjaro 15mg", "89254300", "search_products")
+        second = _register_catalog_request(session, "Mounjaro 15mg", "89254300", "compare_shopping_list")
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(second.request_count, 2)
+        self.assertEqual(second.last_requested_by_tool, "compare_shopping_list")
+
+    def test_register_search_job_upserts_active_job_by_query_and_cep(self):
+        session = _FakeSession([])
+        catalog_request = _register_catalog_request(session, "mounjaro 15mg", "89254300", "search_products")
+
+        first = _register_search_job(session, "mounjaro 15mg", "89254300", "search_products", catalog_request)
+        second = _register_search_job(session, "Mounjaro 15mg", "89254300", "compare_shopping_list", catalog_request)
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(second.request_count, 2)
+        self.assertEqual(second.requested_by_tool, "compare_shopping_list")
+        self.assertEqual(second.position_hint, 1)
+        self.assertEqual(second.catalog_request_id, catalog_request.id)
+
+    def test_search_job_payload_exposes_queue_status(self):
+        session = _FakeSession([])
+        job = _register_search_job(session, "produto raro xyz", "89254300", "search_products")
+
+        payload = _search_job_payload(job, session)
+
+        self.assertEqual(payload["status"], "queued")
+        self.assertEqual(payload["position"], 1)
+        self.assertEqual(payload["eta_seconds"], 0)
+
+    def test_search_job_payload_exposes_warnings_from_result_payload(self):
+        session = _FakeSession([])
+        job = _register_search_job(session, "produto raro xyz", "89254300", "search_products")
+        job.status = "partial_success"
+        job.result_payload = {
+            "warnings": [
+                {
+                    "code": "partial_scraper_failure",
+                    "message": "Uma ou mais farmacias falharam durante a busca sob demanda.",
+                    "pharmacies": ["panvel"],
+                }
+            ]
+        }
+
+        payload = _search_job_payload(job, session)
+
+        self.assertEqual(payload["status"], "partial_success")
+        self.assertEqual(payload["warnings"][0]["code"], "partial_scraper_failure")
+
+    def test_job_completion_status_marks_partial_success(self):
+        status = _job_completion_status(
+            [
+                {"pharmacy_slug": "a", "status": "completed"},
+                {"pharmacy_slug": "b", "status": "skipped"},
+            ]
+        )
+        self.assertEqual(status, "partial_success")
+
+    def test_job_warnings_include_partial_failure_and_no_results(self):
+        warnings = _job_warnings(
+            [
+                {"pharmacy_slug": "panvel", "status": "failed"},
+                {"pharmacy_slug": "drogasil", "status": "completed"},
+            ],
+            {"results": []},
+        )
+        self.assertEqual(warnings[0]["code"], "partial_scraper_failure")
+        self.assertEqual(warnings[1]["code"], "no_results_found")
+
+    def test_job_warnings_include_runtime_unavailable_when_scraper_is_skipped(self):
+        warnings = _job_warnings(
+            [
+                {"pharmacy_slug": "panvel", "status": "skipped"},
+                {"pharmacy_slug": "drogasil", "status": "completed"},
+            ],
+            {"results": []},
+        )
+        self.assertEqual(warnings[0]["code"], "scraper_runtime_unavailable")
+
+    def test_queue_metrics_counts_jobs_by_status(self):
+        session = _FakeSession([])
+        queued = _register_search_job(session, "produto a", "89254300", "search_products")
+        processing = SearchJob(
+            id=2,
+            query="produto b",
+            normalized_query="produto b",
+            cep="89254300",
+            status="processing",
+            requested_by_tool="search_products",
+            request_count=1,
+            created_at=datetime.now(UTC).replace(tzinfo=None),
+            updated_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+        session.search_jobs.append(processing)
+
+        metrics = _queue_metrics(session)
+
+        self.assertEqual(metrics["queued_jobs"], 1)
+        self.assertEqual(metrics["processing_jobs"], 1)
+        self.assertEqual(metrics["total_jobs"], 2)
+        self.assertIsNotNone(metrics["oldest_queued_job_minutes"])
+
+    def test_pharmacy_metrics_summarize_matching_and_availability(self):
+        session = _FakeSession([])
+        pharmacy = Pharmacy(id=1, name="Panvel", slug="panvel")
+        source_product = SourceProduct(id=1, pharmacy=pharmacy, raw_name="Novalgina", normalized_name="novalgina", source_sku="1")
+        source_product.match = ProductMatch(review_status="auto_approved", match_type="ean_gtin", confidence=1.0)
+        session.source_products = [source_product]
+        session.matches = [source_product.match]
+        session.added = []
+        session.catalog_requests = []
+        session.scrape_runs = []
+        source_product.prices = []
+
+        original_builder = __import__("src.main", fromlist=["_build_latest_price_map"])._build_latest_price_map
+        try:
+            import src.main as main_module
+
+            main_module._build_latest_price_map = lambda db: {
+                1: PriceSnapshot(
+                    source_product_id=1,
+                    price=10.0,
+                    availability="available",
+                    captured_at=datetime.now(UTC).replace(tzinfo=None),
+                    scrape_run_id=1,
+                )
+            }
+            metrics = _pharmacy_metrics(session)
+        finally:
+            main_module._build_latest_price_map = original_builder
+
+        self.assertEqual(metrics["Panvel"]["source_products"], 1)
+        self.assertEqual(metrics["Panvel"]["auto_approved_matches"], 1)
+        self.assertEqual(metrics["Panvel"]["availability_counts"]["available"], 1)
+
+    def test_ops_health_marks_failed_runs_as_degraded(self):
+        session = _FakeSession([])
+        pharmacy = Pharmacy(id=1, name="Panvel", slug="panvel")
+        session.scrape_runs = [
+            ScrapeRun(
+                id=1,
+                pharmacy=pharmacy,
+                cep="89254300",
+                trigger_type="scheduled",
+                status="failed",
+                search_terms=["novalgina"],
+                products_seen=10,
+                products_saved=0,
+                error_count=1,
+                started_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+        payload = _ops_health_payload(session)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertIn("Panvel", payload["failed_pharmacies"])
 
 
 if __name__ == "__main__":

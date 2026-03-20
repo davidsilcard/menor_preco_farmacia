@@ -139,6 +139,44 @@ class ScrapeRun(Base):
     price_snapshots = relationship("PriceSnapshot", back_populates="scrape_run")
 
 
+class CatalogRequest(Base):
+    __tablename__ = "catalog_requests"
+    __table_args__ = (
+        UniqueConstraint("normalized_query", "cep", name="uq_catalog_requests_query_cep"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    query = Column(String, nullable=False)
+    normalized_query = Column(String, nullable=False, index=True)
+    cep = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending")
+    request_count = Column(Integer, nullable=False, default=1)
+    first_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_requested_by_tool = Column(String)
+
+
+class SearchJob(Base):
+    __tablename__ = "search_jobs"
+
+    id = Column(Integer, primary_key=True)
+    query = Column(String, nullable=False)
+    normalized_query = Column(String, nullable=False, index=True)
+    cep = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="queued")
+    requested_by_tool = Column(String, nullable=False)
+    request_count = Column(Integer, nullable=False, default=1)
+    position_hint = Column(Integer)
+    eta_seconds = Column(Integer)
+    result_payload = Column(JSON)
+    error_message = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    catalog_request_id = Column(Integer, ForeignKey("catalog_requests.id"), index=True)
+
+
 engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

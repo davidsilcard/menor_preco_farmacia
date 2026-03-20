@@ -6,13 +6,24 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from src.core.config import settings
-from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SessionLocal, SourceProduct
+from src.models.base import (
+    CatalogRequest,
+    CanonicalProduct,
+    Pharmacy,
+    PriceSnapshot,
+    ProductMatch,
+    ScrapeRun,
+    SearchJob,
+    SessionLocal,
+    SourceProduct,
+)
 from src.scrapers.base import BaseScraper
 
 app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 
 FRESH_DATA_MAX_AGE_MINUTES = 12 * 60
 STALE_DATA_MAX_AGE_MINUTES = 24 * 60
+SEARCH_JOB_ETA_SECONDS = 15 * 60
 
 SEARCH_TERM_ALIASES = {
     "cpr": "comprimidos",
@@ -118,6 +129,16 @@ def read_root():
         "active_cep": settings.CEP,
         "model": "source_product + canonical_product + price_snapshot",
         "comparison_endpoints": ["/comparison/canonical-products", "/comparison/canonical/{id}"],
+        "operational_endpoints": [
+            "/catalog/requests",
+            "/search-jobs",
+            "/search-jobs/{job_id}",
+            "/ops/health",
+            "/ops/metrics",
+            "/ops/scrape-runs",
+            "/ops/search-jobs/process-next",
+            "/ops/search-jobs/{job_id}/process",
+        ],
         "tool_endpoints": [
             "/tool/search-products",
             "/tool/compare-shopping-list",
@@ -488,6 +509,285 @@ def _tool_response(tool_name: str, tool_input: dict, result, confidence: float, 
     }
 
 
+def _register_catalog_request(db: Session, query: str, cep: str, tool_name: str):
+    normalized_query = _normalize_query(query)
+    if not normalized_query:
+        return None
+
+    existing = (
+        db.query(CatalogRequest)
+        .filter(CatalogRequest.normalized_query == normalized_query, CatalogRequest.cep == cep)
+        .first()
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if existing:
+        existing.request_count += 1
+        existing.last_requested_at = now
+        existing.last_requested_by_tool = tool_name
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    request = CatalogRequest(
+        query=query,
+        normalized_query=normalized_query,
+        cep=cep,
+        status="pending",
+        request_count=1,
+        first_requested_at=now,
+        last_requested_at=now,
+        last_requested_by_tool=tool_name,
+    )
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def _catalog_request_payload(request: CatalogRequest | None):
+    if not request:
+        return None
+    return {
+        "catalog_request_id": request.id,
+        "query": request.query,
+        "normalized_query": request.normalized_query,
+        "cep": request.cep,
+        "status": request.status,
+        "request_count": request.request_count,
+        "first_requested_at": request.first_requested_at,
+        "last_requested_at": request.last_requested_at,
+        "last_requested_by_tool": request.last_requested_by_tool,
+    }
+
+
+def _queued_job_position(db: Session, current_job_id: int | None = None):
+    queued_jobs = (
+        db.query(SearchJob)
+        .filter(SearchJob.status.in_(["queued", "processing"]))
+        .order_by(SearchJob.created_at.asc(), SearchJob.id.asc())
+        .all()
+    )
+    if current_job_id is None:
+        return len(queued_jobs) + 1
+
+    for index, job in enumerate(queued_jobs, start=1):
+        if job.id == current_job_id:
+            return index
+    return len(queued_jobs) + 1
+
+
+def _search_job_payload(job: SearchJob | None, db: Session | None = None):
+    if not job:
+        return None
+
+    position = job.position_hint
+    if db and job.status in {"queued", "processing"}:
+        position = _queued_job_position(db, job.id)
+
+    return {
+        "job_id": job.id,
+        "query": job.query,
+        "normalized_query": job.normalized_query,
+        "cep": job.cep,
+        "status": job.status,
+        "warnings": ((job.result_payload or {}).get("warnings") or []),
+        "requested_by_tool": job.requested_by_tool,
+        "request_count": job.request_count,
+        "position": position,
+        "eta_seconds": job.eta_seconds,
+        "catalog_request_id": job.catalog_request_id,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "error_message": job.error_message,
+        "result_payload": job.result_payload,
+    }
+
+
+def _queue_metrics(db: Session):
+    jobs = db.query(SearchJob).all()
+    queued = [job for job in jobs if job.status == "queued"]
+    processing = [job for job in jobs if job.status == "processing"]
+    failed = [job for job in jobs if job.status == "failed"]
+    completed = [job for job in jobs if job.status == "completed"]
+    return {
+        "total_jobs": len(jobs),
+        "queued_jobs": len(queued),
+        "processing_jobs": len(processing),
+        "completed_jobs": len(completed),
+        "failed_jobs": len(failed),
+        "oldest_queued_job_minutes": (
+            _data_age_minutes(min(job.created_at for job in queued))
+            if queued
+            else None
+        ),
+    }
+
+
+def _scrape_run_payload(run: ScrapeRun):
+    duration_seconds = None
+    if run.finished_at:
+        duration_seconds = max(int((run.finished_at - run.started_at).total_seconds()), 0)
+    return {
+        "scrape_run_id": run.id,
+        "pharmacy": run.pharmacy.name if run.pharmacy else None,
+        "cep": run.cep,
+        "trigger_type": run.trigger_type,
+        "status": run.status,
+        "search_terms": run.search_terms or [],
+        "products_seen": run.products_seen,
+        "products_saved": run.products_saved,
+        "error_count": run.error_count,
+        "error_message": run.error_message,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "duration_seconds": duration_seconds,
+    }
+
+
+def _pharmacy_metrics(db: Session):
+    source_products = (
+        db.query(SourceProduct)
+        .options(
+            joinedload(SourceProduct.pharmacy),
+            joinedload(SourceProduct.match),
+        )
+        .all()
+    )
+    latest_prices = _build_latest_price_map(db)
+    metrics = {}
+
+    for product in source_products:
+        pharmacy_name = product.pharmacy.name
+        bucket = metrics.setdefault(
+            pharmacy_name,
+            {
+                "source_products": 0,
+                "matched_products": 0,
+                "auto_approved_matches": 0,
+                "needs_review_matches": 0,
+                "availability_counts": {"available": 0, "unknown": 0, "out_of_stock": 0},
+                "latest_snapshot_age_minutes": None,
+            },
+        )
+        bucket["source_products"] += 1
+        if product.match:
+            bucket["matched_products"] += 1
+            if product.match.review_status == "auto_approved":
+                bucket["auto_approved_matches"] += 1
+            if product.match.review_status == "needs_review":
+                bucket["needs_review_matches"] += 1
+
+        latest_snapshot = latest_prices.get(product.id)
+        if latest_snapshot:
+            availability = latest_snapshot.availability or "unknown"
+            bucket["availability_counts"][availability] = bucket["availability_counts"].get(availability, 0) + 1
+            age = _data_age_minutes(latest_snapshot.captured_at)
+            current_oldest = bucket["latest_snapshot_age_minutes"]
+            bucket["latest_snapshot_age_minutes"] = age if current_oldest is None else max(current_oldest, age)
+
+    for bucket in metrics.values():
+        bucket["match_rate"] = round(bucket["matched_products"] / bucket["source_products"], 4) if bucket["source_products"] else 0.0
+        bucket["auto_approved_rate"] = (
+            round(bucket["auto_approved_matches"] / bucket["matched_products"], 4) if bucket["matched_products"] else 0.0
+        )
+
+    return metrics
+
+
+def _ops_health_payload(db: Session):
+    queue = _queue_metrics(db)
+    last_runs = (
+        db.query(ScrapeRun)
+        .options(joinedload(ScrapeRun.pharmacy))
+        .order_by(ScrapeRun.started_at.desc(), ScrapeRun.id.desc())
+        .limit(20)
+        .all()
+    )
+    last_run_by_pharmacy = {}
+    for run in last_runs:
+        pharmacy_name = run.pharmacy.name if run.pharmacy else f"pharmacy:{run.pharmacy_id}"
+        last_run_by_pharmacy.setdefault(pharmacy_name, run)
+
+    stale_pharmacies = []
+    failed_pharmacies = []
+    for pharmacy_name, run in last_run_by_pharmacy.items():
+        if run.status == "failed":
+            failed_pharmacies.append(pharmacy_name)
+        elif _freshness_status(run.started_at) != "fresh":
+            stale_pharmacies.append(pharmacy_name)
+
+    overall_status = "healthy"
+    if failed_pharmacies:
+        overall_status = "degraded"
+    elif queue["queued_jobs"] > 20 or stale_pharmacies:
+        overall_status = "attention"
+
+    return {
+        "status": overall_status,
+        "active_cep": settings.CEP,
+        "queue": queue,
+        "stale_pharmacies": sorted(stale_pharmacies),
+        "failed_pharmacies": sorted(failed_pharmacies),
+        "last_scrape_runs": [_scrape_run_payload(run) for run in last_run_by_pharmacy.values()],
+    }
+
+
+def _register_search_job(
+    db: Session,
+    query: str,
+    cep: str,
+    tool_name: str,
+    catalog_request: CatalogRequest | None = None,
+):
+    normalized_query = _normalize_query(query)
+    if not normalized_query:
+        return None
+
+    existing = (
+        db.query(SearchJob)
+        .filter(
+            SearchJob.normalized_query == normalized_query,
+            SearchJob.cep == cep,
+            SearchJob.status.in_(["queued", "processing"]),
+        )
+        .order_by(SearchJob.created_at.asc(), SearchJob.id.asc())
+        .first()
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if existing:
+        existing.request_count += 1
+        existing.requested_by_tool = tool_name
+        existing.updated_at = now
+        if catalog_request and not existing.catalog_request_id:
+            existing.catalog_request_id = catalog_request.id
+        existing.position_hint = _queued_job_position(db, existing.id)
+        existing.eta_seconds = max(existing.position_hint - 1, 0) * SEARCH_JOB_ETA_SECONDS
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    job = SearchJob(
+        query=query,
+        normalized_query=normalized_query,
+        cep=cep,
+        status="queued",
+        requested_by_tool=tool_name,
+        request_count=1,
+        catalog_request_id=catalog_request.id if catalog_request else None,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(job)
+    db.flush()
+    job.position_hint = _queued_job_position(db, job.id)
+    job.eta_seconds = max(job.position_hint - 1, 0) * SEARCH_JOB_ETA_SECONDS
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def _estimate_overall_confidence(items: list[dict]):
     scores = [item.get("score", 0) for item in items if item.get("match_found")]
     if not scores:
@@ -762,13 +1062,112 @@ def list_pending_reviews(db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/catalog/requests")
+def list_catalog_requests(db: Session = Depends(get_db)):
+    requests = db.query(CatalogRequest).order_by(CatalogRequest.last_requested_at.desc()).all()
+    return [_catalog_request_payload(request) for request in requests]
+
+
+@app.get("/search-jobs")
+def list_search_jobs(db: Session = Depends(get_db)):
+    jobs = db.query(SearchJob).order_by(SearchJob.created_at.desc(), SearchJob.id.desc()).all()
+    return [_search_job_payload(job, db) for job in jobs]
+
+
+@app.get("/search-jobs/{job_id}")
+def get_search_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(SearchJob).filter(SearchJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Search job nao encontrado")
+    return _search_job_payload(job, db)
+
+
+@app.get("/ops/health")
+def ops_health(db: Session = Depends(get_db)):
+    return _ops_health_payload(db)
+
+
+@app.get("/ops/scrape-runs")
+def list_scrape_runs(limit: int = Query(20, ge=1, le=200), db: Session = Depends(get_db)):
+    runs = (
+        db.query(ScrapeRun)
+        .options(joinedload(ScrapeRun.pharmacy))
+        .order_by(ScrapeRun.started_at.desc(), ScrapeRun.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_scrape_run_payload(run) for run in runs]
+
+
+@app.get("/ops/metrics")
+def ops_metrics(db: Session = Depends(get_db)):
+    latest_prices = _build_latest_price_map(db)
+    matches = db.query(ProductMatch).all()
+    latest_snapshots = list(latest_prices.values())
+    availability_counts = {"available": 0, "unknown": 0, "out_of_stock": 0}
+    for snapshot in latest_snapshots:
+        availability = snapshot.availability or "unknown"
+        availability_counts[availability] = availability_counts.get(availability, 0) + 1
+
+    match_type_counts = {}
+    review_status_counts = {}
+    for match in matches:
+        match_type_counts[match.match_type] = match_type_counts.get(match.match_type, 0) + 1
+        review_status_counts[match.review_status] = review_status_counts.get(match.review_status, 0) + 1
+
+    return {
+        "active_cep": settings.CEP,
+        "catalog": {
+            "canonical_products": db.query(CanonicalProduct).count(),
+            "source_products": db.query(SourceProduct).count(),
+            "latest_snapshots": len(latest_snapshots),
+        },
+        "matching": {
+            "total_matches": len(matches),
+            "match_type_counts": match_type_counts,
+            "review_status_counts": review_status_counts,
+        },
+        "availability": availability_counts,
+        "queue": _queue_metrics(db),
+        "catalog_requests": {
+            "pending": db.query(CatalogRequest).filter(CatalogRequest.status == "pending").count(),
+            "total": db.query(CatalogRequest).count(),
+        },
+        "pharmacies": _pharmacy_metrics(db),
+    }
+
+
+@app.post("/ops/search-jobs/process-next")
+def process_next_search_job_endpoint():
+    from src.services.search_jobs import process_next_search_job
+
+    job = process_next_search_job()
+    if not job:
+        return {"message": "Nenhum search job pendente na fila."}
+    with SessionLocal() as db:
+        refreshed = db.query(SearchJob).filter(SearchJob.id == job.id).first()
+        return _search_job_payload(refreshed, db)
+
+
+@app.post("/ops/search-jobs/{job_id}/process")
+def process_search_job_endpoint(job_id: int):
+    from src.services.search_jobs import process_search_job
+
+    job = process_search_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Search job nao encontrado")
+    with SessionLocal() as db:
+        refreshed = db.query(SearchJob).filter(SearchJob.id == job.id).first()
+        return _search_job_payload(refreshed, db)
+
+
 @app.get("/tool/search-products")
 def tool_search_products(
     query: str = Query(..., min_length=2),
     cep: str = Query(..., min_length=8),
     db: Session = Depends(get_db),
 ):
-    _validate_cep_context(cep)
+    requested_cep = _validate_cep_context(cep)
     latest_prices = _build_latest_price_map(db)
     matches = _find_matching_canonicals(db, query)
     results = [
@@ -792,6 +1191,8 @@ def tool_search_products(
         for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
     ]
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
+    catalog_request = None
+    search_job = None
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
     if results and confidence < 0.5:
         warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
@@ -801,11 +1202,20 @@ def tool_search_products(
             warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
         elif best_offer and best_offer.get("availability") == "unknown":
             warnings.append("Melhor oferta encontrada com estoque nao confirmado.")
+    else:
+        catalog_request = _register_catalog_request(db, query, requested_cep, "search_products")
+        search_job = _register_search_job(db, query, requested_cep, "search_products", catalog_request)
+        warnings.append("Item registrado para enriquecimento futuro do catalogo.")
+        warnings.append("Busca sob demanda adicionada a fila de processamento.")
 
     return _tool_response(
         "search_products",
         {"query": query, "cep": cep},
-        {"results": results},
+        {
+            "results": results,
+            "catalog_request": _catalog_request_payload(catalog_request),
+            "search_job": _search_job_payload(search_job, db),
+        },
         confidence,
         warnings,
     )
@@ -813,10 +1223,12 @@ def tool_search_products(
 
 @app.post("/tool/compare-shopping-list")
 def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Session = Depends(get_db)):
-    _validate_cep_context(payload.cep)
+    requested_cep = _validate_cep_context(payload.cep)
     latest_prices = _build_latest_price_map(db)
     comparisons = []
     scores = []
+    catalog_requests = []
+    search_jobs = []
 
     for item in payload.items:
         matches = _find_matching_canonicals(db, item, limit=1)
@@ -828,6 +1240,10 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
                     "results": [],
                 }
             )
+            catalog_request = _register_catalog_request(db, item, requested_cep, "compare_shopping_list")
+            catalog_requests.append(_catalog_request_payload(catalog_request))
+            search_job = _register_search_job(db, item, requested_cep, "compare_shopping_list", catalog_request)
+            search_jobs.append(_search_job_payload(search_job, db))
             continue
 
         score, canonical_product = matches[0]
@@ -858,6 +1274,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
     warnings = []
     if unmatched_count:
         warnings.append(f"{unmatched_count} item(ns) da lista nao tiveram match.")
+        warnings.append("Itens sem match foram adicionados a fila de busca sob demanda.")
     if any(item.get("match_found") and item.get("score", 0) < 50 for item in comparisons):
         warnings.append("Alguns matches da lista tem baixa confianca.")
     if comparisons and not _build_price_summary(comparisons)["best_basket_pharmacy"]:
@@ -867,7 +1284,11 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
     return _tool_response(
         "compare_shopping_list",
         payload.model_dump(),
-        _build_basket_result(comparisons),
+        {
+            **_build_basket_result(comparisons),
+            "catalog_requests": catalog_requests,
+            "search_jobs": search_jobs,
+        },
         min((sum(scores) / len(scores)) / 100, 1.0) if scores else 0.0,
         warnings,
     )
@@ -882,10 +1303,12 @@ def tool_compare_basket(payload: ShoppingListRequest = Body(...), db: Session = 
 
 @app.post("/tool/compare-invoice-items")
 def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db: Session = Depends(get_db)):
-    _validate_cep_context(payload.cep)
+    requested_cep = _validate_cep_context(payload.cep)
     latest_prices = _build_latest_price_map(db)
     comparisons = []
     max_score = 0
+    catalog_requests = []
+    search_jobs = []
 
     for item in payload.items:
         matches = _find_matching_canonicals(db, item.description, limit=1)
@@ -900,6 +1323,16 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
                     "results": [],
                 }
             )
+            catalog_request = _register_catalog_request(db, item.description, requested_cep, "compare_invoice_items")
+            catalog_requests.append(_catalog_request_payload(catalog_request))
+            search_job = _register_search_job(
+                db,
+                item.description,
+                requested_cep,
+                "compare_invoice_items",
+                catalog_request,
+            )
+            search_jobs.append(_search_job_payload(search_job, db))
             continue
 
         score, canonical_product = matches[0]
@@ -941,6 +1374,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
     warnings = []
     if unmatched_count:
         warnings.append(f"{unmatched_count} item(ns) da nota nao tiveram match.")
+        warnings.append("Itens sem match foram adicionados a fila de busca sob demanda.")
     if comparisons and max_score < 50:
         warnings.append("Alguns matches da nota tem baixa confianca.")
     warnings.extend(_availability_warnings(comparisons))
@@ -951,6 +1385,8 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
         {
             "items": comparisons,
             "total_potential_savings": total_potential_savings,
+            "catalog_requests": catalog_requests,
+            "search_jobs": search_jobs,
         },
         min(max_score / 100, 1.0) if comparisons else 0.0,
         warnings,
@@ -978,6 +1414,8 @@ def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Sess
             "captured_at": payload.captured_at,
             **_build_basket_result(items),
             "summary": summary,
+            "catalog_requests": invoice_result["result"].get("catalog_requests", []),
+            "search_jobs": invoice_result["result"].get("search_jobs", []),
         },
         _estimate_overall_confidence(items),
         warnings,
@@ -986,7 +1424,7 @@ def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Sess
 
 @app.post("/tool/search-observed-item")
 def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Session = Depends(get_db)):
-    _validate_cep_context(payload.cep)
+    requested_cep = _validate_cep_context(payload.cep)
     query = _build_observed_query(payload)
     latest_prices = _build_latest_price_map(db)
     matches = _find_matching_canonicals(db, query)
@@ -1012,10 +1450,16 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
     ]
 
     warnings = []
+    catalog_request = None
+    search_job = None
     if payload.source_type == "box_photo":
         warnings.append("Entrada tratada como OCR de caixa; revise lote, validade e textos promocionais ignorados.")
     if not results:
         warnings.append("Nenhum produto canonico encontrado a partir das observacoes enviadas.")
+        catalog_request = _register_catalog_request(db, query, requested_cep, "search_observed_item")
+        search_job = _register_search_job(db, query, requested_cep, "search_observed_item", catalog_request)
+        warnings.append("Item observado registrado para enriquecimento futuro do catalogo.")
+        warnings.append("Busca sob demanda adicionada a fila de processamento.")
     elif results[0]["score"] < 50:
         warnings.append("Match encontrado com baixa confianca para item observado.")
     else:
@@ -1032,6 +1476,8 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
         {
             "normalized_query": query,
             "results": results,
+            "catalog_request": _catalog_request_payload(catalog_request),
+            "search_job": _search_job_payload(search_job, db),
         },
         confidence,
         warnings,
