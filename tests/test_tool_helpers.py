@@ -770,11 +770,11 @@ class ToolHelperTests(unittest.TestCase):
         session.scrape_runs = []
         source_product.prices = []
 
-        original_builder = __import__("src.main", fromlist=["_build_latest_price_map"])._build_latest_price_map
-        try:
-            import src.main as main_module
+        from src.services import ops as ops_module
 
-            main_module._build_latest_price_map = lambda db: {
+        original_builder = ops_module.build_latest_price_map
+        try:
+            ops_module.build_latest_price_map = lambda db: {
                 1: PriceSnapshot(
                     source_product_id=1,
                     price=10.0,
@@ -785,7 +785,7 @@ class ToolHelperTests(unittest.TestCase):
             }
             metrics = _pharmacy_metrics(session)
         finally:
-            main_module._build_latest_price_map = original_builder
+            ops_module.build_latest_price_map = original_builder
 
         self.assertEqual(metrics["Panvel"]["source_products"], 1)
         self.assertEqual(metrics["Panvel"]["auto_approved_matches"], 1)
