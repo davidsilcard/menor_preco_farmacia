@@ -4,6 +4,7 @@ from src.models.base import ScrapeRun, SearchJob, SessionLocal
 from src.services.catalog_queries import normalize_cep
 from src.services.demand_tracking import search_job_payload
 from src.services.ops import ops_health_payload, ops_metrics_payload, scrape_run_payload
+from src.services.operational_cycle import collection_schedule_status, run_operational_cycle
 
 router = APIRouter()
 
@@ -14,6 +15,11 @@ def get_collection_plan(cep: str | None = Query(None)):
 
     normalized_cep = normalize_cep(cep) if cep else None
     return build_scheduled_collection_plan(normalized_cep)
+
+
+@router.get("/ops/schedule")
+def get_collection_schedule():
+    return collection_schedule_status()
 
 
 @router.get("/ops/health")
@@ -58,6 +64,15 @@ def run_scheduled_collection_endpoint(cep: str | None = Query(None)):
 
     normalized_cep = normalize_cep(cep) if cep else None
     return run_scheduled_collection(normalized_cep)
+
+
+@router.post("/ops/cycle/run")
+def run_operational_cycle_endpoint(
+    cep: str | None = Query(None),
+    force_collection: bool = Query(False),
+):
+    normalized_cep = normalize_cep(cep) if cep else None
+    return run_operational_cycle(cep=normalized_cep, force_collection=force_collection)
 
 
 @router.post("/ops/search-jobs/{job_id}/process")

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
         "SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS", "false"
     ).lower() == "true"
     SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP: int = int(os.getenv("SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP", "50"))
+    SCHEDULED_COLLECTION_SLOTS: str = os.getenv("SCHEDULED_COLLECTION_SLOTS", "08:00,15:00")
+    SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES: int = int(os.getenv("SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES", "120"))
+    PRICE_RETENTION_DAYS: int = int(os.getenv("PRICE_RETENTION_DAYS", "90"))
 
     @property
     def DATABASE_URL(self) -> str:

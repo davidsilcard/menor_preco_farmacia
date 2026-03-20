@@ -204,11 +204,13 @@ engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def delete_old_prices():
-    """Remove snapshots capturados ha mais de 3 meses."""
-    three_months_ago = datetime.utcnow() - timedelta(days=90)
-    with SessionLocal() as session:
-        stmt = delete(PriceSnapshot).where(PriceSnapshot.captured_at < three_months_ago)
+def delete_old_prices(*, retention_days: int | None = None, session_factory=None):
+    """Remove snapshots capturados antes da janela de retencao configurada."""
+    retention_days = retention_days or settings.PRICE_RETENTION_DAYS
+    session_factory = session_factory or SessionLocal
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    with session_factory() as session:
+        stmt = delete(PriceSnapshot).where(PriceSnapshot.captured_at < cutoff)
         result = session.execute(stmt)
         session.commit()
-        print(f"Limpeza concluida. {result.rowcount} snapshots antigos foram removidos.")
+        return result.rowcount or 0

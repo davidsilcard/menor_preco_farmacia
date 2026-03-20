@@ -29,6 +29,7 @@ from src.services.demand_tracking import (
     tracked_item_status as _tracked_item_status,
 )
 from src.services.search_jobs import _job_completion_status, _job_warnings
+from src.services.operational_cycle import collection_schedule_status, parse_collection_slots
 from src.services.scheduled_collection import _collection_search_term, _group_tracked_items_for_plan, _tracked_item_status_for_scheduler
 from src.services.matching import ProductMatcher
 from src.services.tool_models import ObservedItemRequest
@@ -813,6 +814,23 @@ class ToolHelperTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "degraded")
         self.assertIn("Panvel", payload["failed_pharmacies"])
+
+    def test_parse_collection_slots_uses_configured_labels(self):
+        slots = parse_collection_slots("08:00,15:00")
+        self.assertEqual([slot["name"] for slot in slots], ["morning", "afternoon"])
+        self.assertEqual([slot["label"] for slot in slots], ["08:00", "15:00"])
+
+    def test_collection_schedule_status_marks_due_window(self):
+        now = datetime(2026, 3, 20, 8, 30, tzinfo=UTC)
+        payload = collection_schedule_status(now)
+        self.assertTrue(payload["due_now"])
+        self.assertEqual(payload["current_slot"]["name"], "morning")
+
+    def test_collection_schedule_status_returns_next_slot_outside_window(self):
+        now = datetime(2026, 3, 20, 10, 31, tzinfo=UTC)
+        payload = collection_schedule_status(now)
+        self.assertFalse(payload["due_now"])
+        self.assertEqual(payload["next_slot"]["name"], "afternoon")
 
 
 if __name__ == "__main__":
