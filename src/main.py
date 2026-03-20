@@ -2,7 +2,6 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from src.core.config import settings
@@ -19,6 +18,22 @@ from src.models.base import (
     TrackedItemByCep,
 )
 from src.scrapers.base import BaseScraper
+from src.services.tool_models import (
+    InvoiceComparisonRequest,
+    ObservedItemRequest,
+    ReceiptComparisonRequest,
+    ShoppingListRequest,
+)
+from src.services.tool_use import (
+    compare_basket_service,
+    compare_canonical_product_service,
+    compare_invoice_items_service,
+    compare_receipt_service,
+    compare_shopping_list_service,
+    list_review_matches_service,
+    search_observed_item_service,
+    search_products_service,
+)
 
 app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 
@@ -85,35 +100,6 @@ STRICT_CANDIDATE_SPECIAL_TOKENS = {
     "seringa",
     "infantil",
 }
-
-
-class ShoppingListRequest(BaseModel):
-    cep: str
-    items: list[str] = Field(default_factory=list)
-
-
-class InvoiceItemInput(BaseModel):
-    description: str
-    paid_price: float | None = None
-    quantity: int | None = 1
-
-
-class InvoiceComparisonRequest(BaseModel):
-    cep: str
-    items: list[InvoiceItemInput] = Field(default_factory=list)
-
-
-class ReceiptComparisonRequest(BaseModel):
-    cep: str
-    items: list[InvoiceItemInput] = Field(default_factory=list)
-    merchant_name: str | None = None
-    captured_at: str | None = None
-
-
-class ObservedItemRequest(BaseModel):
-    cep: str
-    observations: list[str] = Field(default_factory=list)
-    source_type: str = "free_text"
 
 
 def get_db():
@@ -1127,58 +1113,15 @@ def compare_canonical_products(db: Session = Depends(get_db)):
 
 @app.get("/comparison/canonical/{canonical_product_id}")
 def compare_single_canonical_product(canonical_product_id: int, db: Session = Depends(get_db)):
-    canonical_product = (
-        db.query(CanonicalProduct)
-        .options(
-            joinedload(CanonicalProduct.matches)
-            .joinedload(ProductMatch.source_product)
-            .joinedload(SourceProduct.pharmacy)
-        )
-        .filter(CanonicalProduct.id == canonical_product_id)
-        .first()
-    )
-    if not canonical_product:
-        raise HTTPException(status_code=404, detail="Produto canonico nao encontrado")
-
-    latest_prices = _build_latest_price_map(db)
-    offers = _canonical_offer_payload(canonical_product, latest_prices)
-    return {
-        "canonical_product_id": canonical_product.id,
-        "canonical_name": canonical_product.canonical_name,
-        "ean_gtin": canonical_product.ean_gtin,
-        "anvisa_code": canonical_product.anvisa_code,
-        "offers": offers,
-    }
+    try:
+        return compare_canonical_product_service(canonical_product_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/matching/review")
 def list_pending_reviews(db: Session = Depends(get_db)):
-    products = (
-        db.query(SourceProduct)
-        .options(
-            joinedload(SourceProduct.pharmacy),
-            joinedload(SourceProduct.match).joinedload(ProductMatch.canonical_product),
-        )
-        .join(ProductMatch, ProductMatch.source_product_id == SourceProduct.id)
-        .filter(ProductMatch.review_status == "needs_review")
-        .all()
-    )
-
-    return [
-        {
-            "source_product_id": product.id,
-            "pharmacy": product.pharmacy.name,
-            "raw_name": product.raw_name,
-            "ean_gtin": product.ean_gtin,
-            "anvisa_code": product.anvisa_code,
-            "canonical_product_id": product.match.canonical_product_id,
-            "canonical_name": product.match.canonical_product.canonical_name if product.match and product.match.canonical_product else None,
-            "match_type": product.match.match_type,
-            "match_confidence": product.match.confidence,
-            "review_notes": product.match.review_notes,
-        }
-        for product in products
-    ]
+    return list_review_matches_service(db)
 
 
 @app.get("/catalog/requests")
@@ -1330,412 +1273,32 @@ def tool_search_products(
     cep: str = Query(..., min_length=8),
     db: Session = Depends(get_db),
 ):
-    requested_cep = _validate_cep_context(cep)
-    latest_prices = _build_latest_price_map(db)
-    matches = _find_matching_canonicals(db, query)
-    results = [
-        {
-            "canonical_product_id": canonical_product.id,
-            "canonical_name": canonical_product.canonical_name,
-            "ean_gtin": canonical_product.ean_gtin,
-            "anvisa_code": canonical_product.anvisa_code,
-            "score": score,
-            "offers": offers,
-            "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
-            "availability_summary": _item_availability_summary(
-                {
-                    "match_found": True,
-                    "best_offer": _best_pricing_offer(offers),
-                    "offers": offers,
-                }
-            ),
-        }
-        for score, canonical_product in matches
-        for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
-    ]
-    confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
-    catalog_request = None
-    search_job = None
-    tracked_item = None
-    warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
-    if results and confidence < 0.5:
-        warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
-    if results:
-        canonical_product = matches[0][1]
-        tracked_item = _register_tracked_item(
-            db,
-            query,
-            requested_cep,
-            "search_products",
-            canonical_product=canonical_product,
-            source_kind="direct_search",
-            match_confidence=confidence,
-        )
-        best_offer = _best_pricing_offer(results[0]["offers"])
-        if not best_offer and results[0]["offers"]:
-            warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
-        elif best_offer and best_offer.get("availability") == "unknown":
-            warnings.append("Melhor oferta encontrada com estoque nao confirmado.")
-    else:
-        tracked_item = _register_tracked_item(
-            db,
-            query,
-            requested_cep,
-            "search_products",
-            source_kind="direct_search",
-            match_confidence=0.0,
-        )
-        catalog_request = _register_catalog_request(db, query, requested_cep, "search_products")
-        search_job = _register_search_job(db, query, requested_cep, "search_products", catalog_request)
-        warnings.append("Item registrado para enriquecimento futuro do catalogo.")
-        warnings.append("Busca sob demanda adicionada a fila de processamento.")
-
-    return _tool_response(
-        "search_products",
-        {"query": query, "cep": cep},
-        {
-            "results": results,
-            "catalog_request": _catalog_request_payload(catalog_request),
-            "search_job": _search_job_payload(search_job, db),
-            "tracked_item": _tracked_item_payload(tracked_item),
-        },
-        confidence,
-        warnings,
-    )
+    return search_products_service(query, cep, db)
 
 
 @app.post("/tool/compare-shopping-list")
 def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Session = Depends(get_db)):
-    requested_cep = _validate_cep_context(payload.cep)
-    latest_prices = _build_latest_price_map(db)
-    comparisons = []
-    scores = []
-    catalog_requests = []
-    search_jobs = []
-    tracked_items = []
-
-    for item in payload.items:
-        matches = _find_matching_canonicals(db, item, limit=1)
-        if not matches:
-            comparisons.append(
-                {
-                    "requested_item": item,
-                    "match_found": False,
-                    "results": [],
-                }
-            )
-            tracked_item = _register_tracked_item(
-                db,
-                item,
-                requested_cep,
-                "compare_shopping_list",
-                source_kind="shopping_list",
-                match_confidence=0.0,
-            )
-            tracked_items.append(_tracked_item_payload(tracked_item))
-            catalog_request = _register_catalog_request(db, item, requested_cep, "compare_shopping_list")
-            catalog_requests.append(_catalog_request_payload(catalog_request))
-            search_job = _register_search_job(db, item, requested_cep, "compare_shopping_list", catalog_request)
-            search_jobs.append(_search_job_payload(search_job, db))
-            continue
-
-        score, canonical_product = matches[0]
-        scores.append(score)
-        offers = _canonical_offer_payload(canonical_product, latest_prices)
-        tracked_item = _register_tracked_item(
-            db,
-            item,
-            requested_cep,
-            "compare_shopping_list",
-            canonical_product=canonical_product,
-            source_kind="shopping_list",
-            match_confidence=min(score / 100, 1.0),
-        )
-        tracked_items.append(_tracked_item_payload(tracked_item))
-        comparisons.append(
-            {
-                "requested_item": item,
-                "match_found": True,
-                "quantity": 1,
-                "score": score,
-                "canonical_product_id": canonical_product.id,
-                "canonical_name": canonical_product.canonical_name,
-                "best_offer": _best_pricing_offer(offers),
-                "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
-                "offers": offers,
-                "availability_summary": _item_availability_summary(
-                    {
-                        "match_found": True,
-                        "best_offer": _best_pricing_offer(offers),
-                        "offers": offers,
-                    }
-                ),
-            }
-        )
-
-    unmatched_count = len([item for item in comparisons if not item["match_found"]])
-    warnings = []
-    if unmatched_count:
-        warnings.append(f"{unmatched_count} item(ns) da lista nao tiveram match.")
-        warnings.append("Itens sem match foram adicionados a fila de busca sob demanda.")
-    if any(item.get("match_found") and item.get("score", 0) < 50 for item in comparisons):
-        warnings.append("Alguns matches da lista tem baixa confianca.")
-    if comparisons and not _build_price_summary(comparisons)["best_basket_pharmacy"]:
-        warnings.append("Nenhuma farmacia unica cobre toda a cesta atual.")
-    warnings.extend(_availability_warnings(comparisons))
-
-    return _tool_response(
-        "compare_shopping_list",
-        payload.model_dump(),
-        {
-            **_build_basket_result(comparisons),
-            "catalog_requests": catalog_requests,
-            "search_jobs": search_jobs,
-            "tracked_items": tracked_items,
-        },
-        min((sum(scores) / len(scores)) / 100, 1.0) if scores else 0.0,
-        warnings,
-    )
+    return compare_shopping_list_service(payload, db)
 
 
 @app.post("/tool/compare-basket")
 def tool_compare_basket(payload: ShoppingListRequest = Body(...), db: Session = Depends(get_db)):
-    result = tool_compare_shopping_list(payload, db)
-    result["tool_name"] = "compare_basket"
-    return result
+    return compare_basket_service(payload, db)
 
 
 @app.post("/tool/compare-invoice-items")
 def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db: Session = Depends(get_db)):
-    requested_cep = _validate_cep_context(payload.cep)
-    latest_prices = _build_latest_price_map(db)
-    comparisons = []
-    max_score = 0
-    catalog_requests = []
-    search_jobs = []
-    tracked_items = []
-
-    for item in payload.items:
-        matches = _find_matching_canonicals(db, item.description, limit=1)
-        if not matches:
-            comparisons.append(
-                {
-                    "invoice_item": item.description,
-                    "paid_price": item.paid_price,
-                    "quantity": item.quantity,
-                    "match_found": False,
-                    "potential_savings": None,
-                    "results": [],
-                }
-            )
-            tracked_item = _register_tracked_item(
-                db,
-                item.description,
-                requested_cep,
-                "compare_invoice_items",
-                source_kind="invoice_item",
-                match_confidence=0.0,
-            )
-            tracked_items.append(_tracked_item_payload(tracked_item))
-            catalog_request = _register_catalog_request(db, item.description, requested_cep, "compare_invoice_items")
-            catalog_requests.append(_catalog_request_payload(catalog_request))
-            search_job = _register_search_job(
-                db,
-                item.description,
-                requested_cep,
-                "compare_invoice_items",
-                catalog_request,
-            )
-            search_jobs.append(_search_job_payload(search_job, db))
-            continue
-
-        score, canonical_product = matches[0]
-        max_score = max(max_score, score)
-        offers = _canonical_offer_payload(canonical_product, latest_prices)
-        best_offer = _best_pricing_offer(offers)
-        tracked_item = _register_tracked_item(
-            db,
-            item.description,
-            requested_cep,
-            "compare_invoice_items",
-            canonical_product=canonical_product,
-            source_kind="invoice_item",
-            match_confidence=min(score / 100, 1.0),
-        )
-        tracked_items.append(_tracked_item_payload(tracked_item))
-        potential_savings = None
-        if best_offer and item.paid_price is not None:
-            potential_savings = round(max(item.paid_price - best_offer["price"], 0), 2)
-
-        comparisons.append(
-            {
-                "invoice_item": item.description,
-                "paid_price": item.paid_price,
-                "quantity": item.quantity,
-                "match_found": True,
-                "score": score,
-                "canonical_product_id": canonical_product.id,
-                "canonical_name": canonical_product.canonical_name,
-                "best_offer": best_offer,
-                "data_freshness": (best_offer or {}).get("data_freshness"),
-                "potential_savings": potential_savings,
-                "offers": offers,
-                "availability_summary": _item_availability_summary(
-                    {
-                        "match_found": True,
-                        "best_offer": best_offer,
-                        "offers": offers,
-                    }
-                ),
-            }
-        )
-
-    total_potential_savings = round(
-        sum(item["potential_savings"] or 0 for item in comparisons),
-        2,
-    )
-    unmatched_count = len([item for item in comparisons if not item["match_found"]])
-    warnings = []
-    if unmatched_count:
-        warnings.append(f"{unmatched_count} item(ns) da nota nao tiveram match.")
-        warnings.append("Itens sem match foram adicionados a fila de busca sob demanda.")
-    if comparisons and max_score < 50:
-        warnings.append("Alguns matches da nota tem baixa confianca.")
-    warnings.extend(_availability_warnings(comparisons))
-
-    return _tool_response(
-        "compare_invoice_items",
-        payload.model_dump(),
-        {
-            "items": comparisons,
-            "total_potential_savings": total_potential_savings,
-            "catalog_requests": catalog_requests,
-            "search_jobs": search_jobs,
-            "tracked_items": tracked_items,
-        },
-        min(max_score / 100, 1.0) if comparisons else 0.0,
-        warnings,
-    )
+    return compare_invoice_items_service(payload, db)
 
 
 @app.post("/tool/compare-receipt")
 def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Session = Depends(get_db)):
-    _validate_cep_context(payload.cep)
-    invoice_result = tool_compare_invoice_items(
-        InvoiceComparisonRequest(cep=payload.cep, items=payload.items),
-        db,
-    )
-    items = invoice_result["result"]["items"]
-    summary = _build_price_summary(items)
-    warnings = list(invoice_result["warnings"])
-    if not items:
-        warnings.append("Nenhum item foi enviado para comparacao da nota.")
-
-    return _tool_response(
-        "compare_receipt",
-        payload.model_dump(),
-        {
-            "merchant_name": payload.merchant_name,
-            "captured_at": payload.captured_at,
-            **_build_basket_result(items),
-            "summary": summary,
-            "catalog_requests": invoice_result["result"].get("catalog_requests", []),
-            "search_jobs": invoice_result["result"].get("search_jobs", []),
-            "tracked_items": invoice_result["result"].get("tracked_items", []),
-        },
-        _estimate_overall_confidence(items),
-        warnings,
-    )
+    return compare_receipt_service(payload, db)
 
 
 @app.post("/tool/search-observed-item")
 def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Session = Depends(get_db)):
-    requested_cep = _validate_cep_context(payload.cep)
-    query = _build_observed_query(payload)
-    latest_prices = _build_latest_price_map(db)
-    matches = _find_matching_canonicals(db, query)
-    results = [
-        {
-            "canonical_product_id": canonical_product.id,
-            "canonical_name": canonical_product.canonical_name,
-            "ean_gtin": canonical_product.ean_gtin,
-            "anvisa_code": canonical_product.anvisa_code,
-            "score": score,
-            "offers": offers,
-            "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
-            "availability_summary": _item_availability_summary(
-                {
-                    "match_found": True,
-                    "best_offer": _best_pricing_offer(offers),
-                    "offers": offers,
-                }
-            ),
-        }
-        for score, canonical_product in matches
-        for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
-    ]
-
-    warnings = []
-    catalog_request = None
-    search_job = None
-    tracked_item = None
-    if payload.source_type == "box_photo":
-        warnings.append("Entrada tratada como OCR de caixa; revise lote, validade e textos promocionais ignorados.")
-    if not results:
-        warnings.append("Nenhum produto canonico encontrado a partir das observacoes enviadas.")
-        tracked_item = _register_tracked_item(
-            db,
-            query,
-            requested_cep,
-            "search_observed_item",
-            source_kind=payload.source_type,
-            match_confidence=0.0,
-        )
-        catalog_request = _register_catalog_request(db, query, requested_cep, "search_observed_item")
-        search_job = _register_search_job(db, query, requested_cep, "search_observed_item", catalog_request)
-        warnings.append("Item observado registrado para enriquecimento futuro do catalogo.")
-        warnings.append("Busca sob demanda adicionada a fila de processamento.")
-    elif results[0]["score"] < 50:
-        tracked_item = _register_tracked_item(
-            db,
-            query,
-            requested_cep,
-            "search_observed_item",
-            canonical_product=matches[0][1],
-            source_kind=payload.source_type,
-            match_confidence=min(results[0]["score"] / 100, 1.0),
-        )
-        warnings.append("Match encontrado com baixa confianca para item observado.")
-    else:
-        tracked_item = _register_tracked_item(
-            db,
-            query,
-            requested_cep,
-            "search_observed_item",
-            canonical_product=matches[0][1],
-            source_kind=payload.source_type,
-            match_confidence=min(results[0]["score"] / 100, 1.0),
-        )
-        best_offer = _best_pricing_offer(results[0]["offers"])
-        if not best_offer and results[0]["offers"]:
-            warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
-        elif best_offer and best_offer.get("availability") == "unknown":
-            warnings.append("Melhor oferta encontrada com estoque nao confirmado para item observado.")
-
-    confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
-    return _tool_response(
-        "search_observed_item",
-        payload.model_dump(),
-        {
-            "normalized_query": query,
-            "results": results,
-            "catalog_request": _catalog_request_payload(catalog_request),
-            "search_job": _search_job_payload(search_job, db),
-            "tracked_item": _tracked_item_payload(tracked_item),
-        },
-        confidence,
-        warnings,
-    )
+    return search_observed_item_service(payload, db)
 
 
 if __name__ == "__main__":

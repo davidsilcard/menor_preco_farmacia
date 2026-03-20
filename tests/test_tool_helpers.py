@@ -2,41 +2,47 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from src.main import (
-    ObservedItemRequest,
-    _availability_rank,
-    _basket_availability_summary,
-    _basket_freshness_summary,
-    _availability_warnings,
-    _best_pricing_offer,
-    _build_basket_result,
-    _build_observed_query,
-    _build_price_summary,
-    _freshness_status,
-    _estimate_overall_confidence,
-    _has_special_token_conflict,
-    _item_availability_summary,
-    _normalize_cep,
-    _normalize_query,
     _ops_health_payload,
     _pharmacy_metrics,
-    _queue_metrics,
-    _register_catalog_request,
-    _register_search_job,
-    _register_tracked_item,
-    _search_job_payload,
-    _score_canonical_match,
-    _snapshot_freshness_payload,
-    _tracked_item_priority,
-    _tracked_item_status,
-    _tokenize_search_text,
-    _tool_response,
 )
 from src.models.base import CanonicalProduct
 from src.models.base import CatalogRequest, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
+from src.services.catalog_queries import (
+    availability_rank as _availability_rank,
+    best_pricing_offer as _best_pricing_offer,
+    freshness_status as _freshness_status,
+    has_special_token_conflict as _has_special_token_conflict,
+    normalize_cep as _normalize_cep,
+    normalize_query as _normalize_query,
+    score_canonical_match as _score_canonical_match,
+    snapshot_freshness_payload as _snapshot_freshness_payload,
+    tokenize_search_text as _tokenize_search_text,
+)
+from src.services.demand_tracking import (
+    queue_metrics as _queue_metrics,
+    register_catalog_request as _register_catalog_request,
+    register_search_job as _register_search_job,
+    register_tracked_item as _register_tracked_item,
+    search_job_payload as _search_job_payload,
+    tracked_item_priority as _tracked_item_priority,
+    tracked_item_status as _tracked_item_status,
+)
 from src.services.search_jobs import _job_completion_status, _job_warnings
 from src.services.scheduled_collection import _collection_search_term, _group_tracked_items_for_plan, _tracked_item_status_for_scheduler
 from src.services.matching import ProductMatcher
+from src.services.tool_models import ObservedItemRequest
+from src.services.tool_use import (
+    availability_warnings as _availability_warnings,
+    basket_availability_summary as _basket_availability_summary,
+    basket_freshness_summary as _basket_freshness_summary,
+    build_basket_result as _build_basket_result,
+    build_observed_query as _build_observed_query,
+    build_price_summary as _build_price_summary,
+    estimate_overall_confidence as _estimate_overall_confidence,
+    item_availability_summary as _item_availability_summary,
+    tool_response as _tool_response,
+)
 
 
 class _FakeQuery:
@@ -140,6 +146,14 @@ class _FakeSession:
 
     def refresh(self, instance):
         return None
+
+    def delete(self, instance):
+        if isinstance(instance, CatalogRequest) and instance in self.catalog_requests:
+            self.catalog_requests.remove(instance)
+        if isinstance(instance, SearchJob) and instance in self.search_jobs:
+            self.search_jobs.remove(instance)
+        if isinstance(instance, TrackedItemByCep) and instance in self.tracked_items:
+            self.tracked_items.remove(instance)
 
     def count(self):
         raise AssertionError("count() should be called on _FakeQuery, not session")
@@ -557,6 +571,47 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(second.request_count_total, 2)
         self.assertEqual(second.status, "active")
         self.assertEqual(second.last_requested_by_tool, "compare_shopping_list")
+
+    def test_register_tracked_item_merges_query_into_existing_canonical_item(self):
+        session = _FakeSession([])
+        canonical = CanonicalProduct(id=10, canonical_name="Mounjaro 15mg", normalized_name="mounjaro 15mg")
+        tracked_by_query = TrackedItemByCep(
+            id=1,
+            cep="89254300",
+            query="mounjaro 15mg",
+            normalized_query="mounjaro 15mg",
+            request_count_total=1,
+            first_requested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2),
+            last_requested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+            status="active",
+            scrape_priority=100,
+        )
+        tracked_by_canonical = TrackedItemByCep(
+            id=2,
+            cep="89254300",
+            query="tirzepatida 15mg",
+            normalized_query="tirzepatida 15mg",
+            canonical_product_id=10,
+            request_count_total=3,
+            first_requested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=5),
+            last_requested_at=datetime.now(UTC).replace(tzinfo=None),
+            status="active",
+            scrape_priority=110,
+        )
+        session.tracked_items = [tracked_by_query, tracked_by_canonical]
+
+        merged = _register_tracked_item(
+            session,
+            "mounjaro 15mg",
+            "89254300",
+            "search_products",
+            canonical_product=canonical,
+        )
+
+        self.assertEqual(merged.id, 2)
+        self.assertEqual(len(session.tracked_items), 1)
+        self.assertEqual(merged.request_count_total, 5)
+        self.assertEqual(merged.canonical_product_id, 10)
 
     def test_scheduler_status_marks_old_item_inactive(self):
         self.assertEqual(

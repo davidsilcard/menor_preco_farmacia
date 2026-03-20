@@ -2,23 +2,24 @@ import json
 import sys
 from typing import Any
 
-from src.main import (
+from src.models.base import SearchJob, SessionLocal
+from src.services.demand_tracking import search_job_payload
+from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
     ReceiptComparisonRequest,
     ShoppingListRequest,
-    compare_single_canonical_product,
-    get_search_job,
-    list_pending_reviews,
-    list_search_jobs,
-    tool_compare_basket,
-    tool_compare_invoice_items,
-    tool_compare_receipt,
-    tool_compare_shopping_list,
-    tool_search_observed_item,
-    tool_search_products,
 )
-from src.models.base import SessionLocal
+from src.services.tool_use import (
+    compare_basket_service,
+    compare_canonical_product_service,
+    compare_invoice_items_service,
+    compare_receipt_service,
+    compare_shopping_list_service,
+    list_review_matches_service,
+    search_observed_item_service,
+    search_products_service,
+)
 
 SERVER_NAME = "super-melhor-preco-farmacia"
 SERVER_VERSION = "0.1.0"
@@ -234,13 +235,13 @@ def _call_tool(name: str, arguments: dict):
     session = SessionLocal()
     try:
         if name == "search_products":
-            result = tool_search_products(
+            result = search_products_service(
                 query=_require(arguments, "query"),
                 cep=_require(arguments, "cep"),
                 db=session,
             )
         elif name == "compare_shopping_list":
-            result = tool_compare_shopping_list(
+            result = compare_shopping_list_service(
                 ShoppingListRequest(
                     cep=_require(arguments, "cep"),
                     items=arguments.get("items", []),
@@ -248,7 +249,7 @@ def _call_tool(name: str, arguments: dict):
                 session,
             )
         elif name == "compare_basket":
-            result = tool_compare_basket(
+            result = compare_basket_service(
                 ShoppingListRequest(
                     cep=_require(arguments, "cep"),
                     items=arguments.get("items", []),
@@ -256,19 +257,23 @@ def _call_tool(name: str, arguments: dict):
                 session,
             )
         elif name == "compare_invoice_items":
-            result = tool_compare_invoice_items(InvoiceComparisonRequest.model_validate(arguments), session)
+            result = compare_invoice_items_service(InvoiceComparisonRequest.model_validate(arguments), session)
         elif name == "compare_receipt":
-            result = tool_compare_receipt(ReceiptComparisonRequest.model_validate(arguments), session)
+            result = compare_receipt_service(ReceiptComparisonRequest.model_validate(arguments), session)
         elif name == "search_observed_item":
-            result = tool_search_observed_item(ObservedItemRequest.model_validate(arguments), session)
+            result = search_observed_item_service(ObservedItemRequest.model_validate(arguments), session)
         elif name == "compare_canonical_product":
-            result = compare_single_canonical_product(int(_require(arguments, "canonical_product_id")), session)
+            result = compare_canonical_product_service(int(_require(arguments, "canonical_product_id")), session)
         elif name == "list_review_matches":
-            result = list_pending_reviews(session)
+            result = list_review_matches_service(session)
         elif name == "get_search_job":
-            result = get_search_job(int(_require(arguments, "job_id")), session)
+            job = session.get(SearchJob, int(_require(arguments, "job_id")))
+            if not job:
+                raise ValueError("Search job nao encontrado")
+            result = search_job_payload(job, session)
         elif name == "list_search_jobs":
-            result = list_search_jobs(session)
+            jobs = session.query(SearchJob).order_by(SearchJob.created_at.desc(), SearchJob.id.desc()).all()
+            result = [search_job_payload(job, session) for job in jobs]
         else:
             raise ValueError(f"Tool desconhecida: {name}")
         return _tool_result(result)

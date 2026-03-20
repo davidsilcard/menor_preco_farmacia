@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 from src.core.config import settings
 from src.models.base import CatalogRequest, SearchJob, SessionLocal
+from src.services.catalog_queries import best_pricing_offer, build_latest_price_map, canonical_offer_payload, find_matching_canonicals
 from src.services.scraper_registry import SCRAPER_REGISTRY
+from src.services.tool_use import item_availability_summary
 
 
 def _json_safe(value):
@@ -79,16 +81,8 @@ def _run_scraper_for_query(scraper, query: str):
 
 
 def _job_search_result_payload(session, query: str):
-    from src.main import (
-        _best_pricing_offer,
-        _build_latest_price_map,
-        _canonical_offer_payload,
-        _find_matching_canonicals,
-        _item_availability_summary,
-    )
-
-    latest_prices = _build_latest_price_map(session)
-    matches = _find_matching_canonicals(session, query)
+    latest_prices = build_latest_price_map(session)
+    matches = find_matching_canonicals(session, query)
     results = [
         {
             "canonical_product_id": canonical_product.id,
@@ -97,17 +91,17 @@ def _job_search_result_payload(session, query: str):
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
             "offers": offers,
-            "best_offer": _best_pricing_offer(offers),
-            "availability_summary": _item_availability_summary(
+            "best_offer": best_pricing_offer(offers),
+            "availability_summary": item_availability_summary(
                 {
                     "match_found": True,
-                    "best_offer": _best_pricing_offer(offers),
+                    "best_offer": best_pricing_offer(offers),
                     "offers": offers,
                 }
             ),
         }
         for score, canonical_product in matches
-        for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
+        for offers in [canonical_offer_payload(canonical_product, latest_prices)]
     ]
     return {
         "results_found": len(results),

@@ -181,6 +181,7 @@ class TrackedItemByCep(Base):
     __tablename__ = "tracked_items_by_cep"
     __table_args__ = (
         UniqueConstraint("cep", "normalized_query", name="uq_tracked_items_by_cep_query"),
+        UniqueConstraint("cep", "canonical_product_id", name="uq_tracked_items_by_cep_canonical"),
     )
 
     id = Column(Integer, primary_key=True)
