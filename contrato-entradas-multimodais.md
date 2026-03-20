@@ -276,3 +276,54 @@ Interpretacao:
 - `confidence`: confianca global da resposta
 - `warnings`: alertas para a LLM considerar
 - `result`: dados estruturados para resposta final
+
+## Resumo de disponibilidade
+
+Os endpoints de tool use podem devolver, dentro de `result`, um campo `availability_summary`.
+
+### Em busca de item unico
+
+Exemplo:
+
+```json
+{
+  "availability_summary": {
+    "state": "only_out_of_stock_offers",
+    "offer_counts": {
+      "available": 0,
+      "unknown": 0,
+      "out_of_stock": 2
+    },
+    "best_offer_availability": null
+  }
+}
+```
+
+Estados atuais:
+
+- `has_available_offers`
+- `only_unknown_offers`
+- `only_out_of_stock_offers`
+- `no_offers`
+
+### Em comparacao de cesta
+
+Exemplo:
+
+```json
+{
+  "availability_summary": {
+    "items_with_available_offers": 1,
+    "items_only_unknown_offers": 0,
+    "items_only_out_of_stock_offers": 1,
+    "items_without_offers": 0
+  }
+}
+```
+
+### Regra para a LLM
+
+- se `state = has_available_offers`, a resposta pode tratar o item como compravel
+- se `state = only_unknown_offers`, a resposta deve dizer que o estoque nao foi confirmado
+- se `state = only_out_of_stock_offers`, a resposta deve dizer que o produto foi encontrado, mas esta sem estoque
+- se a cesta tiver `items_only_out_of_stock_offers > 0`, a LLM nao deve afirmar que alguma farmacia cobre toda a cesta

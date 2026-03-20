@@ -207,6 +207,18 @@ Todos eles retornam o mesmo envelope:
 }
 ```
 
+Campos importantes dentro de `result`:
+
+- `offers`: ofertas por farmacia com `availability`
+- `availability_summary`: resumo estruturado de disponibilidade para a LLM
+
+Estados atuais de disponibilidade por item:
+
+- `has_available_offers`
+- `only_unknown_offers`
+- `only_out_of_stock_offers`
+- `no_offers`
+
 Exemplos de consultas que devem funcionar melhor agora:
 
 - `GET /tool/search-products?query=novalg inf 100ml&cep=89254300`
@@ -243,10 +255,20 @@ Um endpoint de comparacao retorna algo neste estilo:
   "canonical_product_id": 2,
   "canonical_name": "NOVALGINA INFANTIL DIPIRONA PARA FEBRE E DOR SERINGA SOLUCAO ORAL 100ML",
   "ean_gtin": "7891058464073",
+  "availability_summary": {
+    "state": "has_available_offers",
+    "offer_counts": {
+      "available": 2,
+      "unknown": 0,
+      "out_of_stock": 0
+    },
+    "best_offer_availability": "available"
+  },
   "offers": [
     {
       "pharmacy": "Drogasil",
       "price": 39.99,
+      "availability": "available",
       "match_type": "ean_gtin",
       "match_confidence": 1.0,
       "review_status": "auto_approved"
@@ -254,6 +276,7 @@ Um endpoint de comparacao retorna algo neste estilo:
     {
       "pharmacy": "Panvel",
       "price": 48.44,
+      "availability": "unknown",
       "match_type": "new_canonical",
       "match_confidence": 0.0,
       "review_status": "new"
@@ -267,6 +290,22 @@ A LLM pode usar isso para responder:
 - qual farmacia esta mais barata
 - qual a diferenca de preco
 - se o match e confiavel ou ainda precisa cuidado
+- se ha estoque confirmado, incerto ou indisponivel
+
+## Regras de disponibilidade para a LLM
+
+Ao interpretar `availability` e `availability_summary`:
+
+- `available`: oferta com estoque confirmado
+- `unknown`: oferta encontrada, mas sem confirmacao forte de estoque
+- `out_of_stock`: oferta encontrada sem estoque
+
+Regras operacionais atuais:
+
+- `out_of_stock` nao entra como melhor oferta
+- `out_of_stock` nao entra no total da cesta
+- `unknown` pode aparecer como fallback, mas perde prioridade para `available`
+- `warnings` e `availability_summary` devem ser usados juntos na resposta final da LLM
 
 ## Instalacao
 
