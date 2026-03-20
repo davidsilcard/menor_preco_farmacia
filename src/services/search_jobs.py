@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 
 from src.core.config import settings
 from src.models.base import CatalogRequest, SearchJob, SessionLocal
-from src.services.catalog_queries import best_pricing_offer, build_latest_price_map, canonical_offer_payload, find_matching_canonicals
+from src.services.catalog_queries import (
+    best_pricing_offer,
+    build_latest_price_map,
+    canonical_offer_payload,
+    find_matching_canonicals,
+    preferred_search_terms,
+)
 from src.services.scraper_registry import SCRAPER_REGISTRY
 from src.services.tool_use import item_availability_summary
 
@@ -60,9 +66,9 @@ def _job_completion_status(scraper_results: list[dict]):
     return "partial_success"
 
 
-def _run_scraper_for_query(scraper, query: str):
+def _run_scraper_for_terms(scraper, terms: list[str]):
     original_terms = list(getattr(scraper, "search_terms", []) or [])
-    scraper.search_terms = [query]
+    scraper.search_terms = list(terms)
     try:
         scrape_method = scraper.scrape
         if inspect.iscoroutinefunction(scrape_method):
@@ -156,6 +162,7 @@ def process_search_job(job_id: int | None = None):
         session.refresh(job)
 
         scraper_results = []
+        search_terms = preferred_search_terms(job.query) or [job.query]
         try:
             for scraper_slug, runtime_type, scraper_cls in SCRAPER_REGISTRY:
                 if runtime_type == "browser" and not settings.ON_DEMAND_ENABLE_BROWSER_SCRAPERS:
@@ -171,11 +178,12 @@ def process_search_job(job_id: int | None = None):
                     continue
                 scraper = scraper_cls()
                 try:
-                    result = _run_scraper_for_query(scraper, job.query)
+                    result = _run_scraper_for_terms(scraper, search_terms)
                     scraper_results.append(
                         {
                             "pharmacy_slug": scraper_slug,
                             "runtime": runtime_type,
+                            "search_terms": search_terms,
                             **result,
                         }
                     )
@@ -184,6 +192,7 @@ def process_search_job(job_id: int | None = None):
                         {
                             "pharmacy_slug": scraper_slug,
                             "runtime": runtime_type,
+                            "search_terms": search_terms,
                             "products_found": 0,
                             "status": "failed",
                             "error_message": str(exc)[:500],
@@ -198,6 +207,7 @@ def process_search_job(job_id: int | None = None):
                 "normalized_query": job.normalized_query,
                 "cep": job.cep,
                 "processed_at": datetime.now(UTC).replace(tzinfo=None),
+                "search_terms": search_terms,
                 "scrapers": scraper_results,
                 "warnings": warnings,
                 "totals": {

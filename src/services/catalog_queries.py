@@ -53,7 +53,6 @@ SEARCH_SPECIAL_TOKENS = {
     "supositorio",
     "supositorios",
     "solucao",
-    "oral",
     "flash",
     "seringa",
     "infantil",
@@ -67,6 +66,30 @@ STRICT_CANDIDATE_SPECIAL_TOKENS = {
     "flash",
     "seringa",
     "infantil",
+}
+
+NON_ANCHOR_TOKENS = {
+    "comprimido",
+    "comprimidos",
+    "capsula",
+    "capsulas",
+    "gota",
+    "gotas",
+    "solucao",
+    "oral",
+    "revestido",
+    "revestidos",
+    "uso",
+    "adulto",
+    "infantil",
+    "seringa",
+    "venda",
+    "sob",
+    "prescricao",
+    "medica",
+    "frasco",
+    "caixa",
+    "ampola",
 }
 
 
@@ -167,6 +190,43 @@ def significant_search_tokens(value: str):
     return {token for token in tokens if token not in stopwords}
 
 
+def anchor_search_tokens(value: str):
+    anchors = set()
+    for token in tokenize_search_text(value):
+        if token in NON_ANCHOR_TOKENS:
+            continue
+        if re.search(r"\d", token):
+            continue
+        if len(token) < 4:
+            continue
+        anchors.add(token)
+    return anchors
+
+
+def preferred_search_terms(value: str):
+    normalized = normalize_query(value)
+    if not normalized:
+        return []
+    if re.fullmatch(r"\d{8,14}", normalized):
+        return [normalized]
+
+    ordered_tokens = tokenize_search_text(normalized)
+    anchor_tokens = [token for token in ordered_tokens if token in anchor_search_tokens(normalized)]
+    dosage_match = re.search(r"\b\d+(?:[.,]\d+)?\s*(mg|ml|g|ui)\b", normalized)
+    dosage_token = None
+    if dosage_match:
+        dosage_token = re.sub(r"\s+", "", dosage_match.group(0))
+
+    terms = []
+    if anchor_tokens and dosage_token:
+        terms.append(f"{anchor_tokens[0]} {dosage_token}")
+    if anchor_tokens:
+        terms.append(anchor_tokens[0])
+    if len(anchor_tokens) >= 2:
+        terms.append(" ".join(anchor_tokens[:2]))
+    return list(dict.fromkeys(term for term in terms if term))
+
+
 def has_special_token_conflict(query: str, candidate: str):
     normalized_query = normalize_query(query)
     if re.fullmatch(r"\d{8,14}", normalized_query):
@@ -242,6 +302,23 @@ def score_canonical_match(canonical_product: CanonicalProduct, query: str):
         return 0
 
     source_aliases = " ".join(match.source_product.normalized_name for match in canonical_product.matches if match.source_product)
+    candidate_anchor_haystack = " ".join(
+        filter(
+            None,
+            [
+                canonical_product.normalized_name,
+                source_aliases,
+                canonical_product.brand,
+                canonical_product.active_ingredient,
+                canonical_product.manufacturer,
+            ],
+        )
+    )
+    query_anchor_tokens = anchor_search_tokens(normalized_query)
+    candidate_anchor_tokens = anchor_search_tokens(candidate_anchor_haystack)
+    if query_anchor_tokens and not query_anchor_tokens.intersection(candidate_anchor_tokens):
+        return 0
+
     haystack = " ".join(
         filter(
             None,
@@ -319,7 +396,7 @@ def find_matching_canonicals(db: Session, query: str, limit: int = 5):
     ranked = []
     for canonical_product in canonical_products:
         score = score_canonical_match(canonical_product, query)
-        if score > 0:
+        if score >= 35:
             ranked.append((score, canonical_product))
 
     ranked.sort(key=lambda item: item[0], reverse=True)

@@ -9,12 +9,14 @@ from src.models.base import CanonicalProduct
 from src.models.base import CatalogRequest, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.catalog_queries import (
+    anchor_search_tokens,
     availability_rank as _availability_rank,
     best_pricing_offer as _best_pricing_offer,
     freshness_status as _freshness_status,
     has_special_token_conflict as _has_special_token_conflict,
     normalize_cep as _normalize_cep,
     normalize_query as _normalize_query,
+    preferred_search_terms,
     score_canonical_match as _score_canonical_match,
     snapshot_freshness_payload as _snapshot_freshness_payload,
     tokenize_search_text as _tokenize_search_text,
@@ -172,6 +174,18 @@ class ToolHelperTests(unittest.TestCase):
         self.assertIn("infantil", tokens)
         self.assertNotIn("cx", tokens)
         self.assertNotIn("unid", tokens)
+
+    def test_anchor_search_tokens_focuses_on_identity_terms(self):
+        anchors = anchor_search_tokens("jardiance empagliflozina 25 mg 30 comprimidos revestidos")
+        self.assertIn("jardiance", anchors)
+        self.assertIn("empagliflozina", anchors)
+        self.assertNotIn("comprimidos", anchors)
+        self.assertNotIn("revestidos", anchors)
+
+    def test_preferred_search_terms_reduce_verbose_ocr_query(self):
+        terms = preferred_search_terms("jardiance empagliflozina 25 mg uso oral uso adulto 30 comprimidos revestidos")
+        self.assertEqual(terms[0], "jardiance 25mg")
+        self.assertIn("jardiance", terms)
 
     def test_build_observed_query_ignores_lot_and_validity_tail(self):
         payload = ObservedItemRequest(
@@ -541,6 +555,17 @@ class ToolHelperTests(unittest.TestCase):
         )
         self.assertGreater(_score_canonical_match(canonical, "7896382709210"), 0)
         self.assertGreater(_score_canonical_match(canonical, "mounjaro 15mg"), 0)
+
+    def test_score_canonical_match_rejects_different_medicine_name(self):
+        canonical = CanonicalProduct(
+            canonical_name="Novalgina 500mg 30 Comprimidos",
+            normalized_name="novalgina 500mg 30 comprimidos",
+            brand="Novalgina",
+            dosage="500mg",
+            pack_size="30 comprimidos",
+        )
+        self.assertEqual(_score_canonical_match(canonical, "oxcarbazepina 600mg 30 comprimidos"), 0)
+        self.assertEqual(_score_canonical_match(canonical, "jardiance empagliflozina 25mg 30 comprimidos revestidos"), 0)
 
     def test_register_catalog_request_upserts_by_query_and_cep(self):
         session = _FakeSession([])
