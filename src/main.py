@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -9,6 +10,9 @@ from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, Sessi
 from src.scrapers.base import BaseScraper
 
 app = FastAPI(title="Monitor de Precos Jaragua do Sul")
+
+FRESH_DATA_MAX_AGE_MINUTES = 12 * 60
+STALE_DATA_MAX_AGE_MINUTES = 24 * 60
 
 SEARCH_TERM_ALIASES = {
     "cpr": "comprimidos",
@@ -193,6 +197,7 @@ def get_product_prices(source_product_id: int, db: Session = Depends(get_db)):
                 "cep": price.cep,
                 "availability": price.availability,
                 "source_url": price.source_url,
+                "data_freshness": _snapshot_freshness_payload(price),
             }
             for price in prices
         ],
@@ -244,6 +249,33 @@ def _validate_cep_context(cep: str):
             detail=f"Os dados atuais foram coletados para o CEP {settings.CEP}. Recolete os scrapers para o CEP solicitado.",
         )
     return requested_cep
+
+
+def _data_age_minutes(captured_at):
+    if not captured_at:
+        return None
+    now_utc = datetime.now(UTC).replace(tzinfo=None)
+    return max(int((now_utc - captured_at).total_seconds() // 60), 0)
+
+
+def _freshness_status(captured_at):
+    age_minutes = _data_age_minutes(captured_at)
+    if age_minutes is None:
+        return "unknown"
+    if age_minutes <= FRESH_DATA_MAX_AGE_MINUTES:
+        return "fresh"
+    if age_minutes <= STALE_DATA_MAX_AGE_MINUTES:
+        return "stale"
+    return "expired"
+
+
+def _snapshot_freshness_payload(snapshot: PriceSnapshot):
+    return {
+        "captured_at": snapshot.captured_at,
+        "data_age_minutes": _data_age_minutes(snapshot.captured_at),
+        "freshness_status": _freshness_status(snapshot.captured_at),
+        "scrape_run_id": snapshot.scrape_run_id,
+    }
 
 
 def _normalize_query(value: str) -> str:
@@ -323,6 +355,7 @@ def _canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices:
                 "captured_at": latest_snapshot.captured_at,
                 "availability": latest_snapshot.availability,
                 "source_url": latest_snapshot.source_url,
+                "data_freshness": _snapshot_freshness_payload(latest_snapshot),
                 "ean_gtin": source_product.ean_gtin,
                 "anvisa_code": source_product.anvisa_code,
                 "match_type": match.match_type,
@@ -527,6 +560,7 @@ def _build_basket_result(items: list[dict]):
         "items": items,
         "summary": summary,
         "availability_summary": _basket_availability_summary(items),
+        "data_freshness": _basket_freshness_summary(items),
     }
 
 
@@ -579,6 +613,28 @@ def _basket_availability_summary(items: list[dict]):
         "items_only_unknown_offers": sum(1 for summary in item_summaries if summary["state"] == "only_unknown_offers"),
         "items_only_out_of_stock_offers": sum(1 for summary in item_summaries if summary["state"] == "only_out_of_stock_offers"),
         "items_without_offers": sum(1 for summary in item_summaries if summary["state"] == "no_offers"),
+    }
+
+
+def _basket_freshness_summary(items: list[dict]):
+    best_offers = [item.get("best_offer") for item in items if item.get("best_offer")]
+    freshness_payloads = [offer.get("data_freshness") for offer in best_offers if offer.get("data_freshness")]
+    if not freshness_payloads:
+        return {
+            "fresh_items": 0,
+            "stale_items": 0,
+            "expired_items": 0,
+            "oldest_data_age_minutes": None,
+            "newest_data_age_minutes": None,
+        }
+
+    ages = [payload["data_age_minutes"] for payload in freshness_payloads if payload.get("data_age_minutes") is not None]
+    return {
+        "fresh_items": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "fresh"),
+        "stale_items": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "stale"),
+        "expired_items": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "expired"),
+        "oldest_data_age_minutes": max(ages) if ages else None,
+        "newest_data_age_minutes": min(ages) if ages else None,
     }
 
 
@@ -723,6 +779,7 @@ def tool_search_products(
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
             "offers": offers,
+            "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
             "availability_summary": _item_availability_summary(
                 {
                     "match_found": True,
@@ -785,6 +842,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
                 "best_offer": _best_pricing_offer(offers),
+                "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
                 "offers": offers,
                 "availability_summary": _item_availability_summary(
                     {
@@ -862,6 +920,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
                 "best_offer": best_offer,
+                "data_freshness": (best_offer or {}).get("data_freshness"),
                 "potential_savings": potential_savings,
                 "offers": offers,
                 "availability_summary": _item_availability_summary(
@@ -939,6 +998,7 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
             "offers": offers,
+            "data_freshness": (_best_pricing_offer(offers) or {}).get("data_freshness"),
             "availability_summary": _item_availability_summary(
                 {
                     "match_found": True,

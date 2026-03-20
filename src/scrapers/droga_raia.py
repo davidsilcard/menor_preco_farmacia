@@ -227,11 +227,14 @@ class DrogaRaiaScraper(BaseScraper):
             return
 
         session = SessionLocal()
+        scrape_run = None
         try:
             pharmacy = session.query(Pharmacy).filter_by(slug="droga-raia").first()
             if not pharmacy:
                 raise ValueError("Farmacia Droga Raia nao cadastrada. Rode src.init_db primeiro.")
             matcher = ProductMatcher(session)
+            scrape_run = self.start_scrape_run(session, pharmacy, self.search_terms)
+            products_saved = 0
 
             for product_data in products:
                 if not product_data.get("source_sku") or not product_data.get("price"):
@@ -302,6 +305,7 @@ class DrogaRaiaScraper(BaseScraper):
                 session.add(
                     PriceSnapshot(
                         source_product_id=source_product.id,
+                        scrape_run_id=scrape_run.id,
                         price=product_data["price"],
                         cep=self.cep,
                         availability=product_data.get("availability", "unknown"),
@@ -309,11 +313,30 @@ class DrogaRaiaScraper(BaseScraper):
                         promotion_text=product_data.get("promotion_text"),
                     )
                 )
+                products_saved += 1
 
+            self.update_scrape_run(
+                session,
+                scrape_run.id,
+                status="completed",
+                products_seen=len(products),
+                products_saved=products_saved,
+            )
             session.commit()
             print(f"Sucesso: {len(products)} snapshots de precos da Droga Raia salvos no banco.")
         except Exception as e:
             session.rollback()
+            if scrape_run:
+                self.update_scrape_run(
+                    session,
+                    scrape_run.id,
+                    status="failed",
+                    products_seen=len(products),
+                    products_saved=0,
+                    error_count=1,
+                    error_message=str(e)[:500],
+                )
+                session.commit()
             print(f"Erro ao salvar produtos da Droga Raia no banco: {e}")
         finally:
             session.close()

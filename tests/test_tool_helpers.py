@@ -1,24 +1,29 @@
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from src.main import (
     ObservedItemRequest,
     _availability_rank,
     _basket_availability_summary,
+    _basket_freshness_summary,
     _availability_warnings,
     _best_pricing_offer,
     _build_basket_result,
     _build_observed_query,
     _build_price_summary,
+    _freshness_status,
     _estimate_overall_confidence,
     _has_special_token_conflict,
     _item_availability_summary,
     _normalize_cep,
     _normalize_query,
     _score_canonical_match,
+    _snapshot_freshness_payload,
     _tokenize_search_text,
     _tool_response,
 )
 from src.models.base import CanonicalProduct
+from src.models.base import PriceSnapshot
 from src.scrapers.base import BaseScraper
 from src.services.matching import ProductMatcher
 
@@ -228,6 +233,40 @@ class ToolHelperTests(unittest.TestCase):
         )
         self.assertEqual(result["availability_summary"]["items_with_available_offers"], 1)
         self.assertEqual(result["availability_summary"]["items_only_out_of_stock_offers"], 1)
+
+    def test_snapshot_freshness_payload_marks_recent_data_as_fresh(self):
+        snapshot = PriceSnapshot(captured_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=30), scrape_run_id=7)
+        freshness = _snapshot_freshness_payload(snapshot)
+        self.assertEqual(freshness["freshness_status"], "fresh")
+        self.assertEqual(freshness["scrape_run_id"], 7)
+
+    def test_basket_freshness_summary_counts_states(self):
+        summary = _basket_freshness_summary(
+            [
+                {
+                    "best_offer": {
+                        "data_freshness": {
+                            "data_age_minutes": 30,
+                            "freshness_status": "fresh",
+                        }
+                    }
+                },
+                {
+                    "best_offer": {
+                        "data_freshness": {
+                            "data_age_minutes": 900,
+                            "freshness_status": "stale",
+                        }
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["fresh_items"], 1)
+        self.assertEqual(summary["stale_items"], 1)
+        self.assertEqual(summary["oldest_data_age_minutes"], 900)
+
+    def test_freshness_status_marks_old_data_as_expired(self):
+        self.assertEqual(_freshness_status(datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2)), "expired")
 
     def test_build_price_summary_does_not_claim_full_basket_when_item_has_only_out_of_stock(self):
         items = [

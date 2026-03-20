@@ -1,7 +1,9 @@
 import re
 import unicodedata
+from datetime import datetime
 
 from src.core.config import settings
+from src.models.base import ScrapeRun
 
 
 class BaseScraper:
@@ -114,3 +116,37 @@ class BaseScraper:
             "pack_size": pack_match.group(1) if pack_match else None,
             "presentation": presentation,
         }
+
+    def start_scrape_run(self, session, pharmacy, search_terms, trigger_type: str = "scheduled"):
+        scrape_run = ScrapeRun(
+            pharmacy_id=pharmacy.id,
+            cep=self.cep,
+            trigger_type=trigger_type,
+            status="running",
+            search_terms=list(search_terms or []),
+        )
+        session.add(scrape_run)
+        session.commit()
+        session.refresh(scrape_run)
+        return scrape_run
+
+    @staticmethod
+    def update_scrape_run(
+        session,
+        scrape_run_id: int,
+        *,
+        status: str,
+        products_seen: int,
+        products_saved: int,
+        error_count: int = 0,
+        error_message: str | None = None,
+    ):
+        scrape_run = session.get(ScrapeRun, scrape_run_id)
+        if not scrape_run:
+            return
+        scrape_run.status = status
+        scrape_run.products_seen = products_seen
+        scrape_run.products_saved = products_saved
+        scrape_run.error_count = error_count
+        scrape_run.error_message = error_message
+        scrape_run.finished_at = datetime.utcnow()

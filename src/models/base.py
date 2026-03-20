@@ -29,6 +29,7 @@ class Pharmacy(Base):
     website = Column(String)
 
     source_products = relationship("SourceProduct", back_populates="pharmacy")
+    scrape_runs = relationship("ScrapeRun", back_populates="pharmacy")
 
 
 class CanonicalProduct(Base):
@@ -105,6 +106,7 @@ class PriceSnapshot(Base):
 
     id = Column(Integer, primary_key=True)
     source_product_id = Column(Integer, ForeignKey("source_products.id"), nullable=False, index=True)
+    scrape_run_id = Column(Integer, ForeignKey("scrape_runs.id"), nullable=False, index=True)
     price = Column(Float, nullable=False)
     list_price = Column(Float)
     availability = Column(String, default="unknown", nullable=False)
@@ -114,6 +116,27 @@ class PriceSnapshot(Base):
     promotion_text = Column(String)
 
     source_product = relationship("SourceProduct", back_populates="prices")
+    scrape_run = relationship("ScrapeRun", back_populates="price_snapshots")
+
+
+class ScrapeRun(Base):
+    __tablename__ = "scrape_runs"
+
+    id = Column(Integer, primary_key=True)
+    pharmacy_id = Column(Integer, ForeignKey("pharmacies.id"), nullable=False, index=True)
+    cep = Column(String, nullable=False)
+    trigger_type = Column(String, nullable=False, default="scheduled")
+    status = Column(String, nullable=False, default="running")
+    search_terms = Column(JSON)
+    products_seen = Column(Integer, nullable=False, default=0)
+    products_saved = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(String)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime)
+
+    pharmacy = relationship("Pharmacy", back_populates="scrape_runs")
+    price_snapshots = relationship("PriceSnapshot", back_populates="scrape_run")
 
 
 engine = create_engine(settings.DATABASE_URL)
