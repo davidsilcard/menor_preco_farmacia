@@ -58,6 +58,16 @@ SEARCH_SPECIAL_TOKENS = {
     "infantil",
 }
 
+STRICT_CANDIDATE_SPECIAL_TOKENS = {
+    "efervescentes",
+    "efervescente",
+    "supositorio",
+    "supositorios",
+    "flash",
+    "seringa",
+    "infantil",
+}
+
 
 class ShoppingListRequest(BaseModel):
     cep: str
@@ -278,9 +288,22 @@ def _significant_search_tokens(value: str):
 
 
 def _has_special_token_conflict(query: str, candidate: str):
+    normalized_query = _normalize_query(query)
+    if re.fullmatch(r"\d{8,14}", normalized_query):
+        return False
+
     query_tokens = _significant_search_tokens(query)
     candidate_tokens = _significant_search_tokens(candidate)
-    return any(((token in query_tokens) != (token in candidate_tokens)) for token in SEARCH_SPECIAL_TOKENS)
+    query_special = {token for token in SEARCH_SPECIAL_TOKENS if token in query_tokens}
+    candidate_special = {token for token in SEARCH_SPECIAL_TOKENS if token in candidate_tokens}
+
+    if any(token not in candidate_special for token in query_special):
+        return True
+
+    if any(token in candidate_special and token not in query_special for token in STRICT_CANDIDATE_SPECIAL_TOKENS):
+        return True
+
+    return False
 
 
 def _canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: dict):
@@ -379,8 +402,13 @@ def _score_canonical_match(canonical_product: CanonicalProduct, query: str):
             else:
                 score += 10
 
-    if canonical_product.dosage and _normalize_query(canonical_product.dosage) in normalized_query:
+    normalized_dosage = _normalize_query(canonical_product.dosage) if canonical_product.dosage else None
+    if normalized_dosage and normalized_dosage in normalized_query:
         score += 20
+    elif normalized_dosage:
+        dosage_prefix = normalized_dosage.split("/")[0]
+        if dosage_prefix and dosage_prefix in normalized_query:
+            score += 18
     if canonical_product.pack_size and _normalize_query(canonical_product.pack_size) in normalized_query:
         score += 20
     if canonical_product.brand and _normalize_query(canonical_product.brand) in normalized_query:
@@ -436,9 +464,10 @@ def _estimate_overall_confidence(items: list[dict]):
 
 def _build_price_summary(items: list[dict]):
     total_paid = round(sum((item.get("paid_price") or 0) * (item.get("quantity") or 1) for item in items), 2)
-    matched_items = [item for item in items if item.get("match_found") and item.get("best_offer")]
+    matched_items = [item for item in items if item.get("match_found")]
+    priced_items = [item for item in matched_items if item.get("best_offer")]
     total_best_price = round(
-        sum((item.get("best_offer", {}).get("price") or 0) * (item.get("quantity") or 1) for item in matched_items if item.get("best_offer")),
+        sum((item.get("best_offer", {}).get("price") or 0) * (item.get("quantity") or 1) for item in priced_items if item.get("best_offer")),
         2,
     )
     total_potential_savings = round(sum(item.get("potential_savings") or 0 for item in items), 2)

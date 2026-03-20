@@ -11,6 +11,7 @@ from src.main import (
     _has_special_token_conflict,
     _normalize_cep,
     _normalize_query,
+    _score_canonical_match,
     _tokenize_search_text,
     _tool_response,
 )
@@ -187,6 +188,27 @@ class ToolHelperTests(unittest.TestCase):
         self.assertTrue(any("sem estoque" in warning for warning in warnings))
         self.assertTrue(any("nao confirmado" in warning for warning in warnings))
 
+    def test_build_price_summary_does_not_claim_full_basket_when_item_has_only_out_of_stock(self):
+        items = [
+            {
+                "match_found": True,
+                "requested_item": "novalgina 1g",
+                "quantity": 1,
+                "best_offer": {"price": 11.0, "pharmacy": "Drogasil", "availability": "available"},
+                "offers": [{"pharmacy": "Drogasil", "price": 11.0, "availability": "available"}],
+            },
+            {
+                "match_found": True,
+                "requested_item": "mounjaro 15mg",
+                "quantity": 1,
+                "best_offer": None,
+                "offers": [{"pharmacy": "Drogaria Catarinense", "price": 3590.0, "availability": "out_of_stock"}],
+            },
+        ]
+        summary = _build_price_summary(items)
+        self.assertIsNone(summary["best_basket_pharmacy"])
+        self.assertIn("mounjaro 15mg", summary["unavailable_items_by_pharmacy"]["Drogasil"])
+
     def test_estimate_overall_confidence_averages_matched_items(self):
         confidence = _estimate_overall_confidence(
             [
@@ -216,6 +238,12 @@ class ToolHelperTests(unittest.TestCase):
             _has_special_token_conflict(
                 "novalgina gotas 20ml",
                 "analgesico e antitermico novalgina 500mg/ml dipirona 20ml gotas",
+            )
+        )
+        self.assertFalse(
+            _has_special_token_conflict(
+                "7896382709210",
+                "mounjaro tirzepatida 15mg/0,5ml com 4 canetas de 0,5ml solucao injetavel eli lilly",
             )
         )
 
@@ -305,6 +333,16 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(decision.match_type, "anchored_structured_match")
         self.assertEqual(decision.review_status, "auto_approved")
         self.assertEqual(decision.canonical_product, anchored)
+
+    def test_score_canonical_match_supports_ean_and_partial_dosage(self):
+        canonical = CanonicalProduct(
+            canonical_name="Mounjaro Tirzepatida 15mg/0,5ml Com 4 Canetas De 0,5ml Solucao Injetavel Eli Lilly",
+            normalized_name="mounjaro tirzepatida 15mg/0,5ml com 4 canetas de 0,5ml solucao injetavel eli lilly",
+            dosage="15mg/0,5ml",
+            ean_gtin="7896382709210",
+        )
+        self.assertGreater(_score_canonical_match(canonical, "7896382709210"), 0)
+        self.assertGreater(_score_canonical_match(canonical, "mounjaro 15mg"), 0)
 
 
 if __name__ == "__main__":
