@@ -59,7 +59,7 @@ class DrogariaSaoPauloScraper(BaseScraper):
                     "source_sku": str(sku_item.get("itemId") or product.get("productReference") or product.get("productId")),
                     "price": float(price),
                     "source_url": product.get("link"),
-                    "availability": "available" if offer.get("AvailableQuantity", 0) > 0 else "unknown",
+                    "availability": self.availability_from_quantity(offer.get("AvailableQuantity")),
                     "brand": product.get("brand"),
                     "manufacturer": product.get("brand"),
                     "active_ingredient": None,

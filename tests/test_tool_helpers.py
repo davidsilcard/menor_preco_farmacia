@@ -2,6 +2,9 @@ import unittest
 
 from src.main import (
     ObservedItemRequest,
+    _availability_rank,
+    _availability_warnings,
+    _best_pricing_offer,
     _build_observed_query,
     _build_price_summary,
     _estimate_overall_confidence,
@@ -125,6 +128,65 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(summary["estimated_totals_by_pharmacy"], {"Panvel": 18.0})
         self.assertIn("Drogasil", summary["unavailable_items_by_pharmacy"])
 
+    def test_best_offer_ignores_out_of_stock(self):
+        best_offer = _best_pricing_offer(
+            [
+                {"pharmacy": "Panvel", "price": 10.0, "availability": "out_of_stock"},
+                {"pharmacy": "Drogasil", "price": 11.0, "availability": "available"},
+            ]
+        )
+        self.assertEqual(best_offer["pharmacy"], "Drogasil")
+
+    def test_build_price_summary_treats_out_of_stock_as_unavailable(self):
+        items = [
+            {
+                "match_found": True,
+                "requested_item": "novalgina 1g",
+                "quantity": 1,
+                "best_offer": {"price": 11.0, "pharmacy": "Drogasil", "availability": "available"},
+                "offers": [
+                    {"pharmacy": "Panvel", "price": 10.0, "availability": "out_of_stock"},
+                    {"pharmacy": "Drogasil", "price": 11.0, "availability": "available"},
+                ],
+            }
+        ]
+        summary = _build_price_summary(items)
+        self.assertEqual(summary["estimated_totals_by_pharmacy"], {"Drogasil": 11.0})
+        self.assertEqual(summary["unavailable_items_by_pharmacy"]["Panvel"], ["novalgina 1g"])
+
+    def test_best_offer_prefers_available_over_unknown(self):
+        best_offer = _best_pricing_offer(
+            [
+                {"pharmacy": "Panvel", "price": 10.0, "availability": "unknown"},
+                {"pharmacy": "Drogasil", "price": 11.0, "availability": "available"},
+            ]
+        )
+        self.assertEqual(best_offer["pharmacy"], "Drogasil")
+
+    def test_availability_rank_orders_available_before_unknown(self):
+        self.assertLess(_availability_rank("available"), _availability_rank("unknown"))
+        self.assertLess(_availability_rank("unknown"), _availability_rank("out_of_stock"))
+
+    def test_availability_warnings_flag_unknown_and_out_of_stock(self):
+        warnings = _availability_warnings(
+            [
+                {
+                    "match_found": True,
+                    "requested_item": "novalgina 1g",
+                    "best_offer": None,
+                    "offers": [{"pharmacy": "Panvel", "price": 10.0, "availability": "out_of_stock"}],
+                },
+                {
+                    "match_found": True,
+                    "requested_item": "dipirona gotas",
+                    "best_offer": {"pharmacy": "Drogasil", "price": 11.0, "availability": "unknown"},
+                    "offers": [{"pharmacy": "Drogasil", "price": 11.0, "availability": "unknown"}],
+                },
+            ]
+        )
+        self.assertTrue(any("sem estoque" in warning for warning in warnings))
+        self.assertTrue(any("nao confirmado" in warning for warning in warnings))
+
     def test_estimate_overall_confidence_averages_matched_items(self):
         confidence = _estimate_overall_confidence(
             [
@@ -166,6 +228,15 @@ class ToolHelperTests(unittest.TestCase):
         fields = BaseScraper.extract_structured_fields("Novalgina Gotas 20ml")
         self.assertIsNone(fields["dosage"])
         self.assertEqual(fields["pack_size"], "20ml")
+
+    def test_availability_from_quantity_distinguishes_zero_stock(self):
+        self.assertEqual(BaseScraper.availability_from_quantity(3), "available")
+        self.assertEqual(BaseScraper.availability_from_quantity(0), "out_of_stock")
+        self.assertEqual(BaseScraper.availability_from_quantity(None), "unknown")
+
+    def test_availability_from_text_detects_indisponibilidade(self):
+        self.assertEqual(BaseScraper.availability_from_text("Produto indisponivel no momento"), "out_of_stock")
+        self.assertEqual(BaseScraper.availability_from_text("Adicionar ao carrinho"), "available")
 
     def test_matcher_auto_approves_structured_match_when_canonical_is_anchored(self):
         canonical = CanonicalProduct(

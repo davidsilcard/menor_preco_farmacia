@@ -114,7 +114,7 @@ class PanvelScraper(BaseScraper):
                         "source_sku": source_sku,
                         "price": float(price_match.group(1).replace(",", ".")),
                         "source_url": full_url,
-                        "availability": "available",
+                        "availability": "unknown",
                         "promotion_text": None,
                         "source_metadata": {
                             "search_term": term,
@@ -183,6 +183,7 @@ class PanvelScraper(BaseScraper):
         ean_gtin = self._extract_ean(product_schema, normalized_body)
         anvisa_code = self._extract_anvisa_code(normalized_body)
         promotion_text = self._extract_promotion_text(normalized_body)
+        availability = self.availability_from_schema(product_schema, normalized_body)
         detail_dosage = self._extract_labeled_value(soup, "dosagem")
         detail_pack_size = self._extract_labeled_value(soup, "quantidade")
 
@@ -202,6 +203,7 @@ class PanvelScraper(BaseScraper):
             "ean_gtin": ean_gtin,
             "anvisa_code": anvisa_code,
             "promotion_text": promotion_text,
+            "availability": availability,
             "source_metadata": metadata,
         }
 

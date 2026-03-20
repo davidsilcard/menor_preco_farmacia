@@ -202,7 +202,7 @@ class FarmaSesiScraper(BaseScraper):
                     **product,
                     **structured_fields,
                     "price": float(final_price),
-                    "availability": "available" if int(listing_price.get("qtd") or 0) > 0 else "unknown",
+                    "availability": self.availability_from_quantity(listing_price.get("qtd")),
                     "brand": detail_fields.get("brand"),
                     "manufacturer": detail_fields.get("manufacturer"),
                     "active_ingredient": detail_fields.get("active_ingredient"),

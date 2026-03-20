@@ -309,8 +309,26 @@ def _canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices:
             }
         )
 
-    offers.sort(key=lambda offer: offer["price"])
+    offers.sort(key=lambda offer: (_availability_rank(offer.get("availability")), offer["price"]))
     return offers
+
+
+def _pricing_eligible_offers(offers: list[dict]):
+    return [offer for offer in offers if offer.get("availability") != "out_of_stock"]
+
+
+def _best_pricing_offer(offers: list[dict]):
+    eligible = _pricing_eligible_offers(offers)
+    eligible.sort(key=lambda offer: (_availability_rank(offer.get("availability")), offer["price"]))
+    return eligible[0] if eligible else None
+
+
+def _availability_rank(availability: str | None):
+    if availability == "available":
+        return 0
+    if availability == "unknown":
+        return 1
+    return 2
 
 
 def _score_canonical_match(canonical_product: CanonicalProduct, query: str):
@@ -418,7 +436,7 @@ def _estimate_overall_confidence(items: list[dict]):
 
 def _build_price_summary(items: list[dict]):
     total_paid = round(sum((item.get("paid_price") or 0) * (item.get("quantity") or 1) for item in items), 2)
-    matched_items = [item for item in items if item.get("match_found") and item.get("offers")]
+    matched_items = [item for item in items if item.get("match_found") and item.get("best_offer")]
     total_best_price = round(
         sum((item.get("best_offer", {}).get("price") or 0) * (item.get("quantity") or 1) for item in matched_items if item.get("best_offer")),
         2,
@@ -440,7 +458,14 @@ def _build_price_summary(items: list[dict]):
         unavailable_items = []
         for item in matched_items:
             quantity = item.get("quantity") or 1
-            offer = next((offer for offer in item.get("offers", []) if offer["pharmacy"] == pharmacy), None)
+            offer = next(
+                (
+                    offer
+                    for offer in item.get("offers", [])
+                    if offer["pharmacy"] == pharmacy and offer.get("availability") != "out_of_stock"
+                ),
+                None,
+            )
             if not offer:
                 unavailable_items.append(item.get("requested_item") or item.get("invoice_item"))
                 continue
@@ -481,6 +506,51 @@ def _build_observed_query(payload: ObservedItemRequest):
     query = re.sub(r"\b(lote|validade|fab|fabricacao|ind\.?|industria brasileira)\b.*", " ", query)
     query = re.sub(r"\s+", " ", query).strip()
     return query
+
+
+def _item_availability_state(item: dict):
+    offers = item.get("offers", [])
+    eligible = _pricing_eligible_offers(offers)
+    if offers and not eligible:
+        return "only_out_of_stock"
+    if eligible and all(offer.get("availability") == "unknown" for offer in eligible):
+        return "only_unknown"
+    return None
+
+
+def _pharmacy_uses_unknown(pharmacy: str, items: list[dict]):
+    for item in items:
+        if not item.get("best_offer"):
+            continue
+        offer = next(
+            (
+                offer
+                for offer in item.get("offers", [])
+                if offer["pharmacy"] == pharmacy and offer.get("availability") != "out_of_stock"
+            ),
+            None,
+        )
+        if offer and offer.get("availability") == "unknown":
+            return True
+    return False
+
+
+def _availability_warnings(items: list[dict]):
+    warnings = []
+    out_of_stock_count = sum(1 for item in items if _item_availability_state(item) == "only_out_of_stock")
+    unknown_only_count = sum(1 for item in items if _item_availability_state(item) == "only_unknown")
+
+    if out_of_stock_count:
+        warnings.append(f"{out_of_stock_count} item(ns) encontrados apenas sem estoque nas farmacias monitoradas.")
+    if unknown_only_count:
+        warnings.append(f"{unknown_only_count} item(ns) encontrados apenas com estoque nao confirmado.")
+
+    summary = _build_price_summary(items)
+    best_basket = summary.get("best_basket_pharmacy")
+    if best_basket and _pharmacy_uses_unknown(best_basket["pharmacy"], items):
+        warnings.append("A melhor farmacia da cesta depende de pelo menos um item com estoque nao confirmado.")
+
+    return warnings
 
 
 @app.get("/comparison/canonical-products")
@@ -596,6 +666,12 @@ def tool_search_products(
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
     if results and confidence < 0.5:
         warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
+    if results:
+        best_offer = _best_pricing_offer(results[0]["offers"])
+        if not best_offer and results[0]["offers"]:
+            warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
+        elif best_offer and best_offer.get("availability") == "unknown":
+            warnings.append("Melhor oferta encontrada com estoque nao confirmado.")
 
     return _tool_response(
         "search_products",
@@ -636,7 +712,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
                 "score": score,
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
-                "best_offer": offers[0] if offers else None,
+                "best_offer": _best_pricing_offer(offers),
                 "offers": offers,
             }
         )
@@ -649,6 +725,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
         warnings.append("Alguns matches da lista tem baixa confianca.")
     if comparisons and not _build_price_summary(comparisons)["best_basket_pharmacy"]:
         warnings.append("Nenhuma farmacia unica cobre toda a cesta atual.")
+    warnings.extend(_availability_warnings(comparisons))
 
     return _tool_response(
         "compare_shopping_list",
@@ -691,7 +768,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
         score, canonical_product = matches[0]
         max_score = max(max_score, score)
         offers = _canonical_offer_payload(canonical_product, latest_prices)
-        best_offer = offers[0] if offers else None
+        best_offer = _best_pricing_offer(offers)
         potential_savings = None
         if best_offer and item.paid_price is not None:
             potential_savings = round(max(item.paid_price - best_offer["price"], 0), 2)
@@ -721,6 +798,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
         warnings.append(f"{unmatched_count} item(ns) da nota nao tiveram match.")
     if comparisons and max_score < 50:
         warnings.append("Alguns matches da nota tem baixa confianca.")
+    warnings.extend(_availability_warnings(comparisons))
 
     return _tool_response(
         "compare_invoice_items",
@@ -786,6 +864,12 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
         warnings.append("Nenhum produto canonico encontrado a partir das observacoes enviadas.")
     elif results[0]["score"] < 50:
         warnings.append("Match encontrado com baixa confianca para item observado.")
+    else:
+        best_offer = _best_pricing_offer(results[0]["offers"])
+        if not best_offer and results[0]["offers"]:
+            warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
+        elif best_offer and best_offer.get("availability") == "unknown":
+            warnings.append("Melhor oferta encontrada com estoque nao confirmado para item observado.")
 
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     return _tool_response(

@@ -120,7 +120,7 @@ class FarmaciaJaraguaScraper(BaseScraper):
         ean_gtin = self._extract_ean(normalized_body)
         anvisa_code = self._extract_anvisa_code(normalized_body)
         promotion_text = None
-        availability = "available"
+        availability = self.availability_from_text(normalized_body)
 
         metadata = dict(product.get("source_metadata") or {})
         metadata["seller"] = self._extract_labeled_value(normalized_body, "vendido por")

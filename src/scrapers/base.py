@@ -5,6 +5,24 @@ from src.core.config import settings
 
 
 class BaseScraper:
+    OUT_OF_STOCK_PATTERNS = (
+        "indisponivel",
+        "indisponivel no momento",
+        "fora de estoque",
+        "sem estoque",
+        "produto esgotado",
+        "esgotado",
+        "avise me",
+    )
+
+    IN_STOCK_PATTERNS = (
+        "instock",
+        "in stock",
+        "retirar hoje",
+        "comprar",
+        "adicionar ao carrinho",
+    )
+
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.cep = settings.CEP
@@ -34,6 +52,48 @@ class BaseScraper:
         if digits.startswith(("000", "999")):
             return None
         return digits or None
+
+    @classmethod
+    def availability_from_quantity(cls, quantity) -> str:
+        if quantity is None or quantity == "":
+            return "unknown"
+        try:
+            return "available" if float(quantity) > 0 else "out_of_stock"
+        except (TypeError, ValueError):
+            return "unknown"
+
+    @classmethod
+    def availability_from_text(cls, value: str | None) -> str:
+        normalized = cls.normalize_text(value or "")
+        if not normalized:
+            return "unknown"
+        if any(pattern in normalized for pattern in cls.OUT_OF_STOCK_PATTERNS):
+            return "out_of_stock"
+        if any(pattern in normalized for pattern in cls.IN_STOCK_PATTERNS):
+            return "available"
+        return "unknown"
+
+    @classmethod
+    def availability_from_schema(cls, product_schema, fallback_text: str | None = None) -> str:
+        if product_schema:
+            offers = product_schema.get("offers") or {}
+            availability = None
+            if isinstance(offers, dict):
+                availability = offers.get("availability")
+                nested_offers = offers.get("offers")
+                if not availability and isinstance(nested_offers, list) and nested_offers:
+                    availability = nested_offers[0].get("availability")
+            elif isinstance(offers, list) and offers:
+                availability = offers[0].get("availability")
+
+            normalized_availability = cls.normalize_text(str(availability or ""))
+            if normalized_availability:
+                if "outofstock" in normalized_availability:
+                    return "out_of_stock"
+                if "instock" in normalized_availability:
+                    return "available"
+
+        return cls.availability_from_text(fallback_text)
 
     @staticmethod
     def extract_structured_fields(raw_name: str) -> dict:

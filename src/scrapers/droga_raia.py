@@ -130,7 +130,7 @@ class DrogaRaiaScraper(BaseScraper):
         dosage = self._extract_labeled_value(normalized_body, "dosagem") or structured_fields.get("dosage")
         pack_size = self._extract_labeled_value(normalized_body, "quantidade") or structured_fields.get("pack_size")
         promotion_text = self._extract_promotion_text(normalized_body)
-        availability = "available" if "instock" in json.dumps(product_schema or {}).lower() else "unknown"
+        availability = self.availability_from_schema(product_schema, normalized_body)
 
         metadata["json_ld"] = product_schema
 
