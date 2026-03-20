@@ -106,3 +106,33 @@ Por isso a arquitetura passa a usar um item monitorado por `CEP`, com:
 - ciclo de vida `active/cooldown/inactive`
 
 Isso permite que a rotina das `08:00` e `15:00` busque apenas os itens relevantes para cada `CEP`.
+
+## Ciclo operacional
+
+O projeto agora tem um ciclo operacional explicito:
+
+1. identificar se a execucao caiu dentro da janela configurada de coleta
+2. montar o lote a partir de `tracked_items_by_cep`
+3. rodar a coleta do slot
+4. aplicar retencao de `price_snapshots`
+5. expor relatorio consolidado para operacao
+
+Configuracao atual recomendada:
+
+- slots: `08:00` e `15:00`
+- janela operacional por slot: `120 minutos`
+- retencao de precos: `90 dias`
+
+Endpoints operacionais relevantes:
+
+- `GET /ops/schedule`
+- `GET /ops/collection-plan`
+- `POST /ops/cycle/run`
+- `GET /ops/metrics`
+- `GET /ops/health`
+
+Isso deixa claro para a LLM e para a operacao humana que:
+
+- um preco nao e "agora"; ele pertence a um ciclo de coleta
+- a resposta deve carregar contexto de frescor
+- o sistema so coleta demanda relevante do CEP

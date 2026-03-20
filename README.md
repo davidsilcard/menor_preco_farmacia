@@ -117,6 +117,7 @@ Fluxo esperado:
 
 ## Estrutura do projeto
 
+- `src/api/`: rotas HTTP
 - `src/core/`: configuracoes globais
 - `src/models/`: modelos SQLAlchemy
 - `src/services/`: regras de matching e logica de dominio
@@ -191,6 +192,16 @@ Esses endpoints sao os mais importantes para a LLM quando a pergunta do usuario 
 - `POST /tool/compare-invoice-items`
 - `POST /tool/compare-receipt`
 - `POST /tool/search-observed-item`
+
+### Operacao e coleta
+
+- `GET /ops/schedule`
+- `GET /ops/collection-plan`
+- `POST /ops/collections/run`
+- `POST /ops/cycle/run`
+- `GET /ops/health`
+- `GET /ops/metrics`
+- `GET /ops/scrape-runs`
 
 Esses endpoints ja sao pensados para uso por agente, sem depender de uma interface humana.
 Eles tambem aceitam entradas mais sujas, como abreviacoes, nomes parciais e codigos `EAN/GTIN`.
@@ -317,6 +328,86 @@ uv run playwright install firefox
 ## Configuracao
 
 Configure `.env` com:
+
+- `CEP=89254300`
+- `SCHEDULED_COLLECTION_SLOTS=08:00,15:00`
+- `SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES=120`
+- `PRICE_RETENTION_DAYS=90`
+- `SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP=50`
+- `SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS=false`
+- `ON_DEMAND_ENABLE_BROWSER_SCRAPERS=false`
+
+## Operacao recomendada
+
+O projeto agora trabalha com um ciclo operacional unico:
+
+1. verifica se esta dentro da janela de coleta das `08:00` ou `15:00`
+2. executa a coleta dos itens monitorados por `CEP` quando estiver na janela
+3. aplica retencao dos `price_snapshots` com mais de `90` dias
+4. devolve relatorio consolidado
+
+### Comandos uteis
+
+Verificar janela atual:
+
+```bash
+uv run python -m src.run_operational_cycle --schedule-only
+```
+
+Executar o ciclo normal:
+
+```bash
+uv run python -m src.run_operational_cycle
+```
+
+Forcar coleta fora da janela:
+
+```bash
+uv run python -m src.run_operational_cycle --force-collection
+```
+
+### Endpoints operacionais
+
+- `GET /ops/schedule`: informa slot atual, proximo slot e janela
+- `POST /ops/cycle/run`: executa coleta + retencao
+- `GET /ops/collection-plan`: mostra os itens que entrariam no lote
+- `GET /ops/metrics`: mostra saude operacional e distribuicao do sistema
+
+### Agendamento no Windows Task Scheduler
+
+Criar duas tarefas, uma para `08:00` e outra para `15:00`, apontando para:
+
+Programa:
+
+```powershell
+C:\Users\davidsc\projetos-python\super_melhor_preco_farmacia\.venv\Scripts\python.exe
+```
+
+Argumentos:
+
+```powershell
+-m src.run_operational_cycle
+```
+
+Iniciar em:
+
+```powershell
+C:\Users\davidsc\projetos-python\super_melhor_preco_farmacia
+```
+
+Se quiser uma execucao manual de suporte fora da janela, usar:
+
+```powershell
+-m src.run_operational_cycle --force-collection
+```
+
+### Politica operacional atual
+
+- a coleta e orientada por demanda real de `CEP + item monitorado`
+- itens sem demanda recente entram em `cooldown` e depois `inactive`
+- o sistema nao varre catalogo completo das farmacias
+- a retencao padrao de preco e `90 dias`
+- a LLM deve sempre informar ao usuario o horario da coleta mais recente quando responder sobre preco
 
 - `POSTGRES_DB`
 - `POSTGRES_USER`
