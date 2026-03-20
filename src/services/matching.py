@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from sqlalchemy.exc import IntegrityError
+
 from src.models.base import CanonicalProduct, ProductMatch
 
 
@@ -123,6 +125,13 @@ class ProductMatcher:
         )
 
     def build_canonical_product(self, product_data: dict) -> CanonicalProduct:
+        ean_gtin = self._clean_identifier(product_data.get("ean_gtin"))
+        anvisa_code = product_data.get("anvisa_code")
+
+        existing = self._find_existing_canonical(ean_gtin, anvisa_code)
+        if existing:
+            return existing
+
         canonical = CanonicalProduct(
             canonical_name=product_data["raw_name"],
             normalized_name=product_data["normalized_name"],
@@ -132,12 +141,19 @@ class ProductMatcher:
             dosage=product_data.get("dosage"),
             presentation=product_data.get("presentation"),
             pack_size=product_data.get("pack_size"),
-            ean_gtin=self._clean_identifier(product_data.get("ean_gtin")),
-            anvisa_code=product_data.get("anvisa_code"),
+            ean_gtin=ean_gtin,
+            anvisa_code=anvisa_code,
         )
         self.session.add(canonical)
-        self.session.flush()
-        return canonical
+        try:
+            self.session.flush()
+            return canonical
+        except IntegrityError:
+            self.session.rollback()
+            existing = self._find_existing_canonical(ean_gtin, anvisa_code)
+            if existing:
+                return existing
+            raise
 
     def resolve_match_metadata(self, canonical_product: CanonicalProduct, product_data: dict) -> MatchDecision:
         ean_gtin = self._clean_identifier(product_data.get("ean_gtin"))
@@ -275,6 +291,17 @@ class ProductMatcher:
     @staticmethod
     def _is_anchored(candidate: CanonicalProduct):
         return bool(candidate.ean_gtin or candidate.anvisa_code)
+
+    def _find_existing_canonical(self, ean_gtin, anvisa_code):
+        if ean_gtin:
+            canonical = self.session.query(CanonicalProduct).filter_by(ean_gtin=ean_gtin).first()
+            if canonical:
+                return canonical
+        if anvisa_code:
+            canonical = self.session.query(CanonicalProduct).filter_by(anvisa_code=anvisa_code).first()
+            if canonical:
+                return canonical
+        return None
 
     @classmethod
     def _presentation_key(cls, value):

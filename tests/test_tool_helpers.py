@@ -42,11 +42,18 @@ class _FakeQuery:
 class _FakeSession:
     def __init__(self, canonicals):
         self.canonicals = canonicals
+        self.added = []
 
     def query(self, model):
         if model is CanonicalProduct:
             return _FakeQuery(self.canonicals)
         raise AssertionError(f"Unexpected model query: {model}")
+
+    def add(self, instance):
+        self.added.append(instance)
+
+    def flush(self):
+        return None
 
 
 class ToolHelperTests(unittest.TestCase):
@@ -333,6 +340,28 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(decision.match_type, "anchored_structured_match")
         self.assertEqual(decision.review_status, "auto_approved")
         self.assertEqual(decision.canonical_product, anchored)
+
+    def test_build_canonical_product_reuses_existing_anchored_record(self):
+        existing = CanonicalProduct(
+            id=33,
+            canonical_name="Mounjaro Tirzepatida 15mg/0,5ml",
+            normalized_name="mounjaro tirzepatida 15mg/0,5ml",
+            ean_gtin="7896382709210",
+        )
+        session = _FakeSession([existing])
+        matcher = ProductMatcher(session)
+
+        canonical = matcher.build_canonical_product(
+            {
+                "raw_name": "Mounjaro Tirzepatida 15mg/0,5ml",
+                "normalized_name": "mounjaro tirzepatida 15mg/0,5ml",
+                "ean_gtin": "7896382709210",
+                "anvisa_code": None,
+            }
+        )
+
+        self.assertEqual(canonical, existing)
+        self.assertEqual(session.added, [])
 
     def test_score_canonical_match_supports_ean_and_partial_dosage(self):
         canonical = CanonicalProduct(
