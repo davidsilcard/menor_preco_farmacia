@@ -187,6 +187,10 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(terms[0], "jardiance 25mg")
         self.assertIn("jardiance", terms)
 
+    def test_preferred_search_terms_do_not_promote_volume_only_as_primary_term(self):
+        terms = preferred_search_terms("clonazepam gotas 20ml ems")
+        self.assertEqual(terms[0], "clonazepam")
+
     def test_build_observed_query_ignores_lot_and_validity_tail(self):
         payload = ObservedItemRequest(
             cep="89254300",

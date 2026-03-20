@@ -212,7 +212,7 @@ def preferred_search_terms(value: str):
 
     ordered_tokens = tokenize_search_text(normalized)
     anchor_tokens = [token for token in ordered_tokens if token in anchor_search_tokens(normalized)]
-    dosage_match = re.search(r"\b\d+(?:[.,]\d+)?\s*(mg|ml|g|ui)\b", normalized)
+    dosage_match = re.search(r"\b\d+(?:[.,]\d+)?\s*(mg|g|ui)\b", normalized)
     dosage_token = None
     if dosage_match:
         dosage_token = re.sub(r"\s+", "", dosage_match.group(0))

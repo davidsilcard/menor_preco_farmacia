@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     DB_HOST: str = os.getenv("DB_HOST", "192.168.25.203")
     DB_PORT: str = os.getenv("DB_PORT", "5432")
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "precos-farmacia")
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("PORT", "8001"))
     
     CEP: str = os.getenv("CEP", "89254300")
     PANVEL_SEARCH_TERMS: str = os.getenv("PANVEL_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")

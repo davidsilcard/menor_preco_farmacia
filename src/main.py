@@ -1,5 +1,13 @@
+from pathlib import Path
+import sys
+
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
+
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 from src.api.catalog_routes import router as catalog_router
 from src.api.deps import get_db
