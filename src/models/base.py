@@ -177,6 +177,28 @@ class SearchJob(Base):
     catalog_request_id = Column(Integer, ForeignKey("catalog_requests.id"), index=True)
 
 
+class TrackedItemByCep(Base):
+    __tablename__ = "tracked_items_by_cep"
+    __table_args__ = (
+        UniqueConstraint("cep", "normalized_query", name="uq_tracked_items_by_cep_query"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    cep = Column(String, nullable=False, index=True)
+    query = Column(String, nullable=False)
+    normalized_query = Column(String, nullable=False, index=True)
+    canonical_product_id = Column(Integer, ForeignKey("canonical_products.id"), index=True)
+    status = Column(String, nullable=False, default="active")
+    request_count_total = Column(Integer, nullable=False, default=1)
+    scrape_priority = Column(Float, nullable=False, default=100.0)
+    first_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_scraped_at = Column(DateTime)
+    last_requested_by_tool = Column(String)
+    source_kind = Column(String)
+    last_match_confidence = Column(Float)
+
+
 engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

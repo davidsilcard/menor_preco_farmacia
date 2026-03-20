@@ -16,6 +16,7 @@ from src.models.base import (
     SearchJob,
     SessionLocal,
     SourceProduct,
+    TrackedItemByCep,
 )
 from src.scrapers.base import BaseScraper
 
@@ -24,6 +25,8 @@ app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 FRESH_DATA_MAX_AGE_MINUTES = 12 * 60
 STALE_DATA_MAX_AGE_MINUTES = 24 * 60
 SEARCH_JOB_ETA_SECONDS = 15 * 60
+TRACKED_ITEM_ACTIVE_DAYS = 30
+TRACKED_ITEM_INACTIVE_DAYS = 90
 
 SEARCH_TERM_ALIASES = {
     "cpr": "comprimidos",
@@ -133,6 +136,9 @@ def read_root():
             "/catalog/requests",
             "/search-jobs",
             "/search-jobs/{job_id}",
+            "/tracked-items",
+            "/ops/collection-plan",
+            "/ops/collections/run",
             "/ops/health",
             "/ops/metrics",
             "/ops/scrape-runs",
@@ -558,6 +564,119 @@ def _catalog_request_payload(request: CatalogRequest | None):
         "last_requested_at": request.last_requested_at,
         "last_requested_by_tool": request.last_requested_by_tool,
     }
+
+
+def _tracked_item_status(last_requested_at):
+    age_minutes = _data_age_minutes(last_requested_at)
+    if age_minutes is None:
+        return "active"
+    age_days = age_minutes / (60 * 24)
+    if age_days > TRACKED_ITEM_INACTIVE_DAYS:
+        return "inactive"
+    if age_days > TRACKED_ITEM_ACTIVE_DAYS:
+        return "cooldown"
+    return "active"
+
+
+def _tracked_item_priority(request_count_total: int, last_requested_at, canonical_product_id: int | None):
+    age_minutes = _data_age_minutes(last_requested_at) or 0
+    age_days = age_minutes / (60 * 24)
+    status = _tracked_item_status(last_requested_at)
+    if status == "inactive":
+        return 0.0
+
+    base = 100.0 if status == "active" else 40.0
+    demand_bonus = min(request_count_total, 25) * 2.0
+    recency_penalty = min(age_days, 30) * 1.5
+    canonical_bonus = 10.0 if canonical_product_id else 0.0
+    return round(max(base + demand_bonus + canonical_bonus - recency_penalty, 0.0), 2)
+
+
+def _tracked_item_payload(item: TrackedItemByCep | None):
+    if not item:
+        return None
+    return {
+        "tracked_item_id": item.id,
+        "cep": item.cep,
+        "query": item.query,
+        "normalized_query": item.normalized_query,
+        "canonical_product_id": item.canonical_product_id,
+        "status": item.status,
+        "request_count_total": item.request_count_total,
+        "scrape_priority": item.scrape_priority,
+        "first_requested_at": item.first_requested_at,
+        "last_requested_at": item.last_requested_at,
+        "last_scraped_at": item.last_scraped_at,
+        "last_requested_by_tool": item.last_requested_by_tool,
+        "source_kind": item.source_kind,
+        "last_match_confidence": item.last_match_confidence,
+    }
+
+
+def _register_tracked_item(
+    db: Session,
+    query: str,
+    cep: str,
+    tool_name: str,
+    *,
+    canonical_product: CanonicalProduct | None = None,
+    source_kind: str | None = None,
+    match_confidence: float | None = None,
+):
+    normalized_query = _normalize_query(query)
+    if not normalized_query:
+        return None
+
+    tracked_item = (
+        db.query(TrackedItemByCep)
+        .filter(TrackedItemByCep.cep == cep, TrackedItemByCep.normalized_query == normalized_query)
+        .first()
+    )
+
+    if not tracked_item and canonical_product:
+        tracked_item = (
+            db.query(TrackedItemByCep)
+            .filter(TrackedItemByCep.cep == cep, TrackedItemByCep.canonical_product_id == canonical_product.id)
+            .first()
+        )
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if tracked_item:
+        tracked_item.request_count_total += 1
+        tracked_item.last_requested_at = now
+        tracked_item.last_requested_by_tool = tool_name
+        if canonical_product:
+            tracked_item.canonical_product_id = canonical_product.id
+        if source_kind:
+            tracked_item.source_kind = source_kind
+        if match_confidence is not None:
+            tracked_item.last_match_confidence = match_confidence
+    else:
+        tracked_item = TrackedItemByCep(
+            cep=cep,
+            query=query,
+            normalized_query=normalized_query,
+            canonical_product_id=canonical_product.id if canonical_product else None,
+            status="active",
+            request_count_total=1,
+            first_requested_at=now,
+            last_requested_at=now,
+            last_requested_by_tool=tool_name,
+            source_kind=source_kind,
+            last_match_confidence=match_confidence,
+        )
+        db.add(tracked_item)
+        db.flush()
+
+    tracked_item.status = _tracked_item_status(tracked_item.last_requested_at)
+    tracked_item.scrape_priority = _tracked_item_priority(
+        tracked_item.request_count_total,
+        tracked_item.last_requested_at,
+        tracked_item.canonical_product_id,
+    )
+    db.commit()
+    db.refresh(tracked_item)
+    return tracked_item
 
 
 def _queued_job_position(db: Session, current_job_id: int | None = None):
@@ -1082,6 +1201,36 @@ def get_search_job(job_id: int, db: Session = Depends(get_db)):
     return _search_job_payload(job, db)
 
 
+@app.get("/tracked-items")
+def list_tracked_items(
+    cep: str | None = Query(None),
+    status: str | None = Query(None),
+    include_inactive: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    query = db.query(TrackedItemByCep).order_by(
+        TrackedItemByCep.scrape_priority.desc(),
+        TrackedItemByCep.last_requested_at.desc(),
+    )
+    if cep:
+        query = query.filter(TrackedItemByCep.cep == _normalize_cep(cep))
+    if status:
+        query = query.filter(TrackedItemByCep.status == status)
+    elif not include_inactive:
+        query = query.filter(TrackedItemByCep.status != "inactive")
+
+    items = query.all()
+    return [_tracked_item_payload(item) for item in items]
+
+
+@app.get("/ops/collection-plan")
+def get_collection_plan(cep: str | None = Query(None)):
+    from src.services.scheduled_collection import build_scheduled_collection_plan
+
+    normalized_cep = _normalize_cep(cep) if cep else None
+    return build_scheduled_collection_plan(normalized_cep)
+
+
 @app.get("/ops/health")
 def ops_health(db: Session = Depends(get_db)):
     return _ops_health_payload(db)
@@ -1133,6 +1282,12 @@ def ops_metrics(db: Session = Depends(get_db)):
             "pending": db.query(CatalogRequest).filter(CatalogRequest.status == "pending").count(),
             "total": db.query(CatalogRequest).count(),
         },
+        "tracked_items": {
+            "total": db.query(TrackedItemByCep).count(),
+            "active": db.query(TrackedItemByCep).filter(TrackedItemByCep.status == "active").count(),
+            "cooldown": db.query(TrackedItemByCep).filter(TrackedItemByCep.status == "cooldown").count(),
+            "inactive": db.query(TrackedItemByCep).filter(TrackedItemByCep.status == "inactive").count(),
+        },
         "pharmacies": _pharmacy_metrics(db),
     }
 
@@ -1147,6 +1302,14 @@ def process_next_search_job_endpoint():
     with SessionLocal() as db:
         refreshed = db.query(SearchJob).filter(SearchJob.id == job.id).first()
         return _search_job_payload(refreshed, db)
+
+
+@app.post("/ops/collections/run")
+def run_scheduled_collection_endpoint(cep: str | None = Query(None)):
+    from src.services.scheduled_collection import run_scheduled_collection
+
+    normalized_cep = _normalize_cep(cep) if cep else None
+    return run_scheduled_collection(normalized_cep)
 
 
 @app.post("/ops/search-jobs/{job_id}/process")
@@ -1193,16 +1356,35 @@ def tool_search_products(
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     catalog_request = None
     search_job = None
+    tracked_item = None
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
     if results and confidence < 0.5:
         warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
     if results:
+        canonical_product = matches[0][1]
+        tracked_item = _register_tracked_item(
+            db,
+            query,
+            requested_cep,
+            "search_products",
+            canonical_product=canonical_product,
+            source_kind="direct_search",
+            match_confidence=confidence,
+        )
         best_offer = _best_pricing_offer(results[0]["offers"])
         if not best_offer and results[0]["offers"]:
             warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
         elif best_offer and best_offer.get("availability") == "unknown":
             warnings.append("Melhor oferta encontrada com estoque nao confirmado.")
     else:
+        tracked_item = _register_tracked_item(
+            db,
+            query,
+            requested_cep,
+            "search_products",
+            source_kind="direct_search",
+            match_confidence=0.0,
+        )
         catalog_request = _register_catalog_request(db, query, requested_cep, "search_products")
         search_job = _register_search_job(db, query, requested_cep, "search_products", catalog_request)
         warnings.append("Item registrado para enriquecimento futuro do catalogo.")
@@ -1215,6 +1397,7 @@ def tool_search_products(
             "results": results,
             "catalog_request": _catalog_request_payload(catalog_request),
             "search_job": _search_job_payload(search_job, db),
+            "tracked_item": _tracked_item_payload(tracked_item),
         },
         confidence,
         warnings,
@@ -1229,6 +1412,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
     scores = []
     catalog_requests = []
     search_jobs = []
+    tracked_items = []
 
     for item in payload.items:
         matches = _find_matching_canonicals(db, item, limit=1)
@@ -1240,6 +1424,15 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
                     "results": [],
                 }
             )
+            tracked_item = _register_tracked_item(
+                db,
+                item,
+                requested_cep,
+                "compare_shopping_list",
+                source_kind="shopping_list",
+                match_confidence=0.0,
+            )
+            tracked_items.append(_tracked_item_payload(tracked_item))
             catalog_request = _register_catalog_request(db, item, requested_cep, "compare_shopping_list")
             catalog_requests.append(_catalog_request_payload(catalog_request))
             search_job = _register_search_job(db, item, requested_cep, "compare_shopping_list", catalog_request)
@@ -1249,6 +1442,16 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
         score, canonical_product = matches[0]
         scores.append(score)
         offers = _canonical_offer_payload(canonical_product, latest_prices)
+        tracked_item = _register_tracked_item(
+            db,
+            item,
+            requested_cep,
+            "compare_shopping_list",
+            canonical_product=canonical_product,
+            source_kind="shopping_list",
+            match_confidence=min(score / 100, 1.0),
+        )
+        tracked_items.append(_tracked_item_payload(tracked_item))
         comparisons.append(
             {
                 "requested_item": item,
@@ -1288,6 +1491,7 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
             **_build_basket_result(comparisons),
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
+            "tracked_items": tracked_items,
         },
         min((sum(scores) / len(scores)) / 100, 1.0) if scores else 0.0,
         warnings,
@@ -1309,6 +1513,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
     max_score = 0
     catalog_requests = []
     search_jobs = []
+    tracked_items = []
 
     for item in payload.items:
         matches = _find_matching_canonicals(db, item.description, limit=1)
@@ -1323,6 +1528,15 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
                     "results": [],
                 }
             )
+            tracked_item = _register_tracked_item(
+                db,
+                item.description,
+                requested_cep,
+                "compare_invoice_items",
+                source_kind="invoice_item",
+                match_confidence=0.0,
+            )
+            tracked_items.append(_tracked_item_payload(tracked_item))
             catalog_request = _register_catalog_request(db, item.description, requested_cep, "compare_invoice_items")
             catalog_requests.append(_catalog_request_payload(catalog_request))
             search_job = _register_search_job(
@@ -1339,6 +1553,16 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
         max_score = max(max_score, score)
         offers = _canonical_offer_payload(canonical_product, latest_prices)
         best_offer = _best_pricing_offer(offers)
+        tracked_item = _register_tracked_item(
+            db,
+            item.description,
+            requested_cep,
+            "compare_invoice_items",
+            canonical_product=canonical_product,
+            source_kind="invoice_item",
+            match_confidence=min(score / 100, 1.0),
+        )
+        tracked_items.append(_tracked_item_payload(tracked_item))
         potential_savings = None
         if best_offer and item.paid_price is not None:
             potential_savings = round(max(item.paid_price - best_offer["price"], 0), 2)
@@ -1387,6 +1611,7 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
             "total_potential_savings": total_potential_savings,
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
+            "tracked_items": tracked_items,
         },
         min(max_score / 100, 1.0) if comparisons else 0.0,
         warnings,
@@ -1416,6 +1641,7 @@ def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Sess
             "summary": summary,
             "catalog_requests": invoice_result["result"].get("catalog_requests", []),
             "search_jobs": invoice_result["result"].get("search_jobs", []),
+            "tracked_items": invoice_result["result"].get("tracked_items", []),
         },
         _estimate_overall_confidence(items),
         warnings,
@@ -1452,17 +1678,44 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
     warnings = []
     catalog_request = None
     search_job = None
+    tracked_item = None
     if payload.source_type == "box_photo":
         warnings.append("Entrada tratada como OCR de caixa; revise lote, validade e textos promocionais ignorados.")
     if not results:
         warnings.append("Nenhum produto canonico encontrado a partir das observacoes enviadas.")
+        tracked_item = _register_tracked_item(
+            db,
+            query,
+            requested_cep,
+            "search_observed_item",
+            source_kind=payload.source_type,
+            match_confidence=0.0,
+        )
         catalog_request = _register_catalog_request(db, query, requested_cep, "search_observed_item")
         search_job = _register_search_job(db, query, requested_cep, "search_observed_item", catalog_request)
         warnings.append("Item observado registrado para enriquecimento futuro do catalogo.")
         warnings.append("Busca sob demanda adicionada a fila de processamento.")
     elif results[0]["score"] < 50:
+        tracked_item = _register_tracked_item(
+            db,
+            query,
+            requested_cep,
+            "search_observed_item",
+            canonical_product=matches[0][1],
+            source_kind=payload.source_type,
+            match_confidence=min(results[0]["score"] / 100, 1.0),
+        )
         warnings.append("Match encontrado com baixa confianca para item observado.")
     else:
+        tracked_item = _register_tracked_item(
+            db,
+            query,
+            requested_cep,
+            "search_observed_item",
+            canonical_product=matches[0][1],
+            source_kind=payload.source_type,
+            match_confidence=min(results[0]["score"] / 100, 1.0),
+        )
         best_offer = _best_pricing_offer(results[0]["offers"])
         if not best_offer and results[0]["offers"]:
             warnings.append("Produto encontrado, mas as ofertas atuais estao sem estoque.")
@@ -1478,6 +1731,7 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
             "results": results,
             "catalog_request": _catalog_request_payload(catalog_request),
             "search_job": _search_job_payload(search_job, db),
+            "tracked_item": _tracked_item_payload(tracked_item),
         },
         confidence,
         warnings,

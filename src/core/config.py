@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         "DROGARIA_SAO_PAULO_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno"
     )
     ON_DEMAND_ENABLE_BROWSER_SCRAPERS: bool = os.getenv("ON_DEMAND_ENABLE_BROWSER_SCRAPERS", "false").lower() == "true"
+    SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS: bool = os.getenv(
+        "SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS", "false"
+    ).lower() == "true"
+    SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP: int = int(os.getenv("SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP", "50"))
 
     @property
     def DATABASE_URL(self) -> str:

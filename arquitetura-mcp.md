@@ -85,3 +85,24 @@ Interpretacao correta:
 No detalhe por farmacia, uma origem tambem pode aparecer como `skipped` quando depende de browser e esse runtime nao esta habilitado para a busca sob demanda.
 
 O agente nao deve tratar `partial_success` como erro fatal, mas tambem nao deve responder como se a cobertura estivesse completa.
+
+## Coleta orientada por demanda
+
+O objetivo nao e varrer o catalogo inteiro das farmacias.
+
+A coleta deve ser guiada por:
+
+- `CEP`
+- demanda observada
+- produto canonico quando houver match confiavel
+
+Por isso a arquitetura passa a usar um item monitorado por `CEP`, com:
+
+- consulta normalizada
+- `canonical_product_id` opcional
+- contagem de demanda
+- recencia
+- prioridade de scraping
+- ciclo de vida `active/cooldown/inactive`
+
+Isso permite que a rotina das `08:00` e `15:00` busque apenas os itens relevantes para cada `CEP`.

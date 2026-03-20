@@ -22,16 +22,20 @@ from src.main import (
     _queue_metrics,
     _register_catalog_request,
     _register_search_job,
+    _register_tracked_item,
     _search_job_payload,
     _score_canonical_match,
     _snapshot_freshness_payload,
+    _tracked_item_priority,
+    _tracked_item_status,
     _tokenize_search_text,
     _tool_response,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import CatalogRequest, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct
+from src.models.base import CatalogRequest, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.search_jobs import _job_completion_status, _job_warnings
+from src.services.scheduled_collection import _collection_search_term, _group_tracked_items_for_plan, _tracked_item_status_for_scheduler
 from src.services.matching import ProductMatcher
 
 
@@ -96,6 +100,7 @@ class _FakeSession:
         self.added = []
         self.catalog_requests = []
         self.search_jobs = []
+        self.tracked_items = []
         self.commits = 0
 
     def query(self, model):
@@ -105,6 +110,8 @@ class _FakeSession:
             return _FakeQuery(self.catalog_requests)
         if model is SearchJob:
             return _FakeQuery(self.search_jobs)
+        if model is TrackedItemByCep:
+            return _FakeQuery(self.tracked_items)
         if model is ScrapeRun:
             return _FakeQuery(getattr(self, "scrape_runs", []))
         if model is SourceProduct:
@@ -121,6 +128,9 @@ class _FakeSession:
         if isinstance(instance, SearchJob):
             instance.id = len(self.search_jobs) + 1
             self.search_jobs.append(instance)
+        if isinstance(instance, TrackedItemByCep):
+            instance.id = len(self.tracked_items) + 1
+            self.tracked_items.append(instance)
 
     def flush(self):
         return None
@@ -525,6 +535,78 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(first.id, second.id)
         self.assertEqual(second.request_count, 2)
         self.assertEqual(second.last_requested_by_tool, "compare_shopping_list")
+
+    def test_tracked_item_status_changes_with_age(self):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        self.assertEqual(_tracked_item_status(now), "active")
+        self.assertEqual(_tracked_item_status(now - timedelta(days=45)), "cooldown")
+        self.assertEqual(_tracked_item_status(now - timedelta(days=120)), "inactive")
+
+    def test_tracked_item_priority_favors_recent_and_canonical_items(self):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        high_priority = _tracked_item_priority(5, now, 10)
+        low_priority = _tracked_item_priority(1, now - timedelta(days=100), None)
+        self.assertGreater(high_priority, low_priority)
+
+    def test_register_tracked_item_upserts_by_query_and_cep(self):
+        session = _FakeSession([])
+        first = _register_tracked_item(session, "mounjaro 15mg", "89254300", "search_products")
+        second = _register_tracked_item(session, "Mounjaro 15mg", "89254300", "compare_shopping_list")
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(second.request_count_total, 2)
+        self.assertEqual(second.status, "active")
+        self.assertEqual(second.last_requested_by_tool, "compare_shopping_list")
+
+    def test_scheduler_status_marks_old_item_inactive(self):
+        self.assertEqual(
+            _tracked_item_status_for_scheduler(datetime.now(UTC).replace(tzinfo=None) - timedelta(days=120)),
+            "inactive",
+        )
+
+    def test_group_tracked_items_for_plan_limits_per_cep_and_excludes_inactive(self):
+        items = [
+            TrackedItemByCep(
+                id=1,
+                cep="89254300",
+                query="item a",
+                normalized_query="item a",
+                status="active",
+                scrape_priority=100,
+            ),
+            TrackedItemByCep(
+                id=2,
+                cep="89254300",
+                query="item b",
+                normalized_query="item b",
+                status="cooldown",
+                scrape_priority=90,
+            ),
+            TrackedItemByCep(
+                id=3,
+                cep="89254300",
+                query="item c",
+                normalized_query="item c",
+                status="inactive",
+                scrape_priority=1000,
+            ),
+        ]
+
+        grouped = _group_tracked_items_for_plan(items, include_cooldown=True, limit_per_cep=2)
+
+        self.assertEqual(len(grouped["89254300"]), 2)
+        self.assertEqual([item.id for item in grouped["89254300"]], [1, 2])
+
+    def test_collection_search_term_prefers_short_stable_term(self):
+        item = TrackedItemByCep(
+            cep="89254300",
+            query="Novalgina 1g 10 comprimidos",
+            normalized_query="novalgina 1g 10 comprimidos",
+            canonical_product_id=None,
+            status="active",
+            scrape_priority=100,
+        )
+        self.assertEqual(_collection_search_term(item), "novalgina")
 
     def test_register_search_job_upserts_active_job_by_query_and_cep(self):
         session = _FakeSession([])

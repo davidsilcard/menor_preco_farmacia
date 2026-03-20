@@ -375,6 +375,34 @@ Importante:
 
 ## Coleta
 
+### Direcao operacional
+
+A coleta nao deve varrer o catalogo inteiro das farmacias.
+
+A direcao atual do projeto e:
+
+- monitorar demanda real por `CEP`
+- rastrear os itens mais pedidos por `CEP`
+- coletar nos horarios fixos apenas os itens relevantes daquele `CEP`
+- deixar itens sem demanda recente sairem da rotina recorrente
+
+Para isso, a base agora passa a usar o conceito de `tracked_items_by_cep`.
+
+Cada item monitorado por CEP guarda:
+
+- consulta normalizada
+- `canonical_product_id` quando ja houver match confiavel
+- `request_count_total`
+- `last_requested_at`
+- `scrape_priority`
+- `status`: `active`, `cooldown` ou `inactive`
+
+Ciclo de vida atual:
+
+- `active`: houve demanda recente; entra na coleta recorrente
+- `cooldown`: perdeu recencia, mas ainda pode voltar
+- `inactive`: ficou fora da janela operacional e deve sair da coleta recorrente
+
 ### Panvel
 
 ```bash
@@ -486,6 +514,7 @@ Observacoes:
 - `partial_success` significa que a busca terminou, mas uma ou mais farmacias falharam durante a execucao
 - `search_job.warnings` traz avisos estruturados para a LLM, como falha parcial por farmacia ou ausencia total de resultados
 - scrapers baseadas em browser podem ser puladas na busca sob demanda quando `ON_DEMAND_ENABLE_BROWSER_SCRAPERS=false`
+- a API tambem pode devolver `tracked_item` ou `tracked_items`, indicando que aquele item entrou na fila de monitoramento recorrente do `CEP`
 
 ### Exemplo de uso em cliente MCP
 
