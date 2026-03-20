@@ -3,12 +3,15 @@ import unittest
 from src.main import (
     ObservedItemRequest,
     _availability_rank,
+    _basket_availability_summary,
     _availability_warnings,
     _best_pricing_offer,
+    _build_basket_result,
     _build_observed_query,
     _build_price_summary,
     _estimate_overall_confidence,
     _has_special_token_conflict,
+    _item_availability_summary,
     _normalize_cep,
     _normalize_query,
     _score_canonical_match,
@@ -194,6 +197,37 @@ class ToolHelperTests(unittest.TestCase):
         )
         self.assertTrue(any("sem estoque" in warning for warning in warnings))
         self.assertTrue(any("nao confirmado" in warning for warning in warnings))
+
+    def test_item_availability_summary_classifies_out_of_stock_only(self):
+        summary = _item_availability_summary(
+            {
+                "match_found": True,
+                "best_offer": None,
+                "offers": [{"pharmacy": "Panvel", "price": 10.0, "availability": "out_of_stock"}],
+            }
+        )
+        self.assertEqual(summary["state"], "only_out_of_stock_offers")
+        self.assertEqual(summary["offer_counts"]["out_of_stock"], 1)
+
+    def test_build_basket_result_includes_availability_summary(self):
+        result = _build_basket_result(
+            [
+                {
+                    "match_found": True,
+                    "requested_item": "novalgina 1g",
+                    "best_offer": {"pharmacy": "Drogasil", "price": 11.0, "availability": "available"},
+                    "offers": [{"pharmacy": "Drogasil", "price": 11.0, "availability": "available"}],
+                },
+                {
+                    "match_found": True,
+                    "requested_item": "mounjaro 15mg",
+                    "best_offer": None,
+                    "offers": [{"pharmacy": "Drogaria Catarinense", "price": 3590.0, "availability": "out_of_stock"}],
+                },
+            ]
+        )
+        self.assertEqual(result["availability_summary"]["items_with_available_offers"], 1)
+        self.assertEqual(result["availability_summary"]["items_only_out_of_stock_offers"], 1)
 
     def test_build_price_summary_does_not_claim_full_basket_when_item_has_only_out_of_stock(self):
         items = [

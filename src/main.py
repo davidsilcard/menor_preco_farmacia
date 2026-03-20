@@ -526,6 +526,7 @@ def _build_basket_result(items: list[dict]):
     return {
         "items": items,
         "summary": summary,
+        "availability_summary": _basket_availability_summary(items),
     }
 
 
@@ -545,6 +546,40 @@ def _item_availability_state(item: dict):
     if eligible and all(offer.get("availability") == "unknown" for offer in eligible):
         return "only_unknown"
     return None
+
+
+def _item_availability_summary(item: dict):
+    offers = item.get("offers", [])
+    counts = {"available": 0, "unknown": 0, "out_of_stock": 0}
+    for offer in offers:
+        availability = offer.get("availability") or "unknown"
+        counts[availability] = counts.get(availability, 0) + 1
+
+    state = _item_availability_state(item)
+    if item.get("match_found") and not offers:
+        state = "no_offers"
+    elif counts["available"] > 0:
+        state = "has_available_offers"
+    elif state == "only_unknown":
+        state = "only_unknown_offers"
+    elif state == "only_out_of_stock":
+        state = "only_out_of_stock_offers"
+
+    return {
+        "state": state,
+        "offer_counts": counts,
+        "best_offer_availability": (item.get("best_offer") or {}).get("availability"),
+    }
+
+
+def _basket_availability_summary(items: list[dict]):
+    item_summaries = [_item_availability_summary(item) for item in items if item.get("match_found")]
+    return {
+        "items_with_available_offers": sum(1 for summary in item_summaries if summary["state"] == "has_available_offers"),
+        "items_only_unknown_offers": sum(1 for summary in item_summaries if summary["state"] == "only_unknown_offers"),
+        "items_only_out_of_stock_offers": sum(1 for summary in item_summaries if summary["state"] == "only_out_of_stock_offers"),
+        "items_without_offers": sum(1 for summary in item_summaries if summary["state"] == "no_offers"),
+    }
 
 
 def _pharmacy_uses_unknown(pharmacy: str, items: list[dict]):
@@ -687,9 +722,17 @@ def tool_search_products(
             "ean_gtin": canonical_product.ean_gtin,
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
-            "offers": _canonical_offer_payload(canonical_product, latest_prices),
+            "offers": offers,
+            "availability_summary": _item_availability_summary(
+                {
+                    "match_found": True,
+                    "best_offer": _best_pricing_offer(offers),
+                    "offers": offers,
+                }
+            ),
         }
         for score, canonical_product in matches
+        for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
     ]
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
@@ -743,6 +786,13 @@ def tool_compare_shopping_list(payload: ShoppingListRequest = Body(...), db: Ses
                 "canonical_name": canonical_product.canonical_name,
                 "best_offer": _best_pricing_offer(offers),
                 "offers": offers,
+                "availability_summary": _item_availability_summary(
+                    {
+                        "match_found": True,
+                        "best_offer": _best_pricing_offer(offers),
+                        "offers": offers,
+                    }
+                ),
             }
         )
 
@@ -814,6 +864,13 @@ def tool_compare_invoice_items(payload: InvoiceComparisonRequest = Body(...), db
                 "best_offer": best_offer,
                 "potential_savings": potential_savings,
                 "offers": offers,
+                "availability_summary": _item_availability_summary(
+                    {
+                        "match_found": True,
+                        "best_offer": best_offer,
+                        "offers": offers,
+                    }
+                ),
             }
         )
 
@@ -881,9 +938,17 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
             "ean_gtin": canonical_product.ean_gtin,
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
-            "offers": _canonical_offer_payload(canonical_product, latest_prices),
+            "offers": offers,
+            "availability_summary": _item_availability_summary(
+                {
+                    "match_found": True,
+                    "best_offer": _best_pricing_offer(offers),
+                    "offers": offers,
+                }
+            ),
         }
         for score, canonical_product in matches
+        for offers in [_canonical_offer_payload(canonical_product, latest_prices)]
     ]
 
     warnings = []
