@@ -1,12 +1,39 @@
+import logging
 import re
 import unicodedata
-from datetime import datetime
+from datetime import UTC, datetime
+from urllib.parse import quote_plus
 
 from src.core.config import settings
-from src.models.base import ScrapeRun
+from src.core.logging import get_logger, log_event
+from src.models.base import Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SessionLocal, SourceProduct
+from src.services.matching import ProductMatcher
 
 
 class BaseScraper:
+    SOURCE_PRODUCT_FIELDS = (
+        "source_url",
+        "raw_name",
+        "normalized_name",
+        "brand",
+        "manufacturer",
+        "active_ingredient",
+        "dosage",
+        "presentation",
+        "pack_size",
+        "ean_gtin",
+        "anvisa_code",
+        "source_metadata",
+    )
+
+    pharmacy_slug = None
+    runtime_type = "http"
+    search_probe_format = None
+    search_probe_response_type = "html"
+    search_probe_expected_content_type = "text/html"
+    search_probe_expected_json_root = None
+    search_probe_contains_term = False
+
     OUT_OF_STOCK_PATTERNS = (
         "indisponivel",
         "indisponivel no momento",
@@ -27,7 +54,76 @@ class BaseScraper:
 
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.cep = settings.CEP
+        self.cep = self.normalize_cep(settings.CEP)
+        self.logger = get_logger(self.__class__.__module__)
+
+    @staticmethod
+    def normalize_cep(value: str | None) -> str:
+        return re.sub(r"\D", "", value or "")
+
+    def set_cep(self, cep: str | None):
+        normalized_cep = self.normalize_cep(cep)
+        if not normalized_cep:
+            raise ValueError("CEP e obrigatorio para executar scraper.")
+        self.cep = normalized_cep
+        return self
+
+    @property
+    def pharmacy_name(self) -> str:
+        slug = self.pharmacy_slug or self.__class__.__name__.replace("Scraper", "")
+        return " ".join(chunk.capitalize() for chunk in slug.split("-"))
+
+    def runtime_enabled(self) -> bool:
+        if self.runtime_type == "http":
+            return True
+        return settings.ON_DEMAND_ENABLE_BROWSER_SCRAPERS or settings.SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS
+
+    def build_probe_specs(self, sample_term: str = "dipirona") -> list[dict]:
+        base_domain = getattr(self, "base_domain", self.base_url)
+        specs = [
+            {
+                "probe_name": "homepage",
+                "url": base_domain,
+                "response_type": "html",
+                "expected_content_type": "text/html",
+            }
+        ]
+
+        if not self.search_probe_format:
+            return specs
+
+        search_spec = {
+            "probe_name": "search_probe",
+            "url": self.search_probe_format.format(base_domain=base_domain, encoded_term=quote_plus(sample_term)),
+            "response_type": self.search_probe_response_type,
+            "expected_content_type": self.search_probe_expected_content_type,
+        }
+        if self.search_probe_expected_json_root:
+            search_spec["expected_json_root"] = self.search_probe_expected_json_root
+        if self.search_probe_contains_term:
+            search_spec["contains_any"] = [sample_term.lower()]
+        specs.append(search_spec)
+        return specs
+
+    def _log(self, level: int, event: str, **fields):
+        log_event(
+            self.logger,
+            level,
+            event,
+            pharmacy_slug=self.pharmacy_slug,
+            pharmacy=self.pharmacy_name,
+            cep=self.cep,
+            **fields,
+        )
+
+    def log_info(self, event: str, **fields):
+        self._log(logging.INFO, event, **fields)
+
+    def log_warning(self, event: str, **fields):
+        self._log(logging.WARNING, event, **fields)
+
+    def log_error(self, event: str, **fields):
+        self._log(logging.ERROR, event, **fields)
 
     async def get_browser_context(self, playwright):
         # Usando Firefox temporariamente por problemas no download do Chromium da Playwright
@@ -149,4 +245,130 @@ class BaseScraper:
         scrape_run.products_saved = products_saved
         scrape_run.error_count = error_count
         scrape_run.error_message = error_message
-        scrape_run.finished_at = datetime.utcnow()
+        scrape_run.finished_at = datetime.now(UTC).replace(tzinfo=None)
+
+    @staticmethod
+    def _missing_required_product_fields(product_data: dict, required_fields: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(field for field in required_fields if not product_data.get(field))
+
+    def _upsert_source_product(self, session, pharmacy_id: int, product_data: dict) -> SourceProduct:
+        source_product = (
+            session.query(SourceProduct)
+            .filter_by(pharmacy_id=pharmacy_id, source_sku=product_data["source_sku"])
+            .first()
+        )
+
+        if not source_product:
+            source_product = SourceProduct(
+                pharmacy_id=pharmacy_id,
+                source_sku=product_data["source_sku"],
+            )
+            session.add(source_product)
+            session.flush()
+
+        for field_name in self.SOURCE_PRODUCT_FIELDS:
+            setattr(source_product, field_name, product_data.get(field_name))
+
+        return source_product
+
+    @staticmethod
+    def _resolve_match(matcher: ProductMatcher, product_data: dict):
+        decision = matcher.match_source_product(product_data)
+        canonical_product = decision.canonical_product or matcher.build_canonical_product(product_data)
+        decision = matcher.resolve_match_metadata(canonical_product, product_data)
+        return canonical_product, decision
+
+    @staticmethod
+    def _upsert_product_match(session, source_product: SourceProduct, canonical_product, decision):
+        if not source_product.match:
+            session.add(
+                ProductMatch(
+                    source_product_id=source_product.id,
+                    canonical_product_id=canonical_product.id,
+                    match_type=decision.match_type,
+                    confidence=decision.confidence,
+                    review_status=decision.review_status,
+                    review_notes=decision.review_notes,
+                )
+            )
+            return
+
+        source_product.match.canonical_product_id = canonical_product.id
+        source_product.match.match_type = decision.match_type
+        source_product.match.confidence = decision.confidence
+        source_product.match.review_status = decision.review_status
+        source_product.match.review_notes = decision.review_notes
+
+    def _create_price_snapshot(self, source_product: SourceProduct, scrape_run_id: int, product_data: dict) -> PriceSnapshot:
+        return PriceSnapshot(
+            source_product_id=source_product.id,
+            scrape_run_id=scrape_run_id,
+            price=product_data["price"],
+            cep=self.cep,
+            availability=product_data.get("availability", "unknown"),
+            source_url=product_data.get("source_url"),
+            promotion_text=product_data.get("promotion_text"),
+        )
+
+    def save_products_to_db(self, products, *, required_fields: tuple[str, ...] = ()):
+        if not products:
+            self.log_info("scraper_save_skipped_no_products")
+            return
+
+        session = SessionLocal()
+        scrape_run = None
+        products_seen = len(products)
+        products_saved = 0
+        skipped_products = 0
+
+        try:
+            pharmacy = session.query(Pharmacy).filter_by(slug=self.pharmacy_slug).first()
+            if not pharmacy:
+                raise ValueError(f"Farmacia {self.pharmacy_name} nao cadastrada. Rode src.init_db primeiro.")
+
+            matcher = ProductMatcher(session)
+            scrape_run = self.start_scrape_run(session, pharmacy, getattr(self, "search_terms", []))
+
+            for product_data in products:
+                missing_fields = self._missing_required_product_fields(product_data, required_fields)
+                if missing_fields:
+                    skipped_products += 1
+                    continue
+
+                source_product = self._upsert_source_product(session, pharmacy.id, product_data)
+                canonical_product, decision = self._resolve_match(matcher, product_data)
+                self._upsert_product_match(session, source_product, canonical_product, decision)
+                matcher.reconcile_canonical_matches(canonical_product)
+                session.add(self._create_price_snapshot(source_product, scrape_run.id, product_data))
+                products_saved += 1
+
+            self.update_scrape_run(
+                session,
+                scrape_run.id,
+                status="completed",
+                products_seen=products_seen,
+                products_saved=products_saved,
+            )
+            session.commit()
+            self.log_info(
+                "scraper_save_completed",
+                products_seen=products_seen,
+                products_saved=products_saved,
+                skipped_products=skipped_products,
+            )
+        except Exception as exc:
+            session.rollback()
+            if scrape_run:
+                self.update_scrape_run(
+                    session,
+                    scrape_run.id,
+                    status="failed",
+                    products_seen=products_seen,
+                    products_saved=0,
+                    error_count=1,
+                    error_message=str(exc)[:500],
+                )
+                session.commit()
+            self.log_error("scraper_save_failed", error_message=str(exc)[:500])
+        finally:
+            session.close()

@@ -3,12 +3,17 @@ from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
 from src.core.config import settings
-from src.models.base import Pharmacy, PriceSnapshot, ProductMatch, SessionLocal, SourceProduct
 from src.scrapers.base import BaseScraper
-from src.services.matching import ProductMatcher
 
 
 class DrogariaCatarinenseScraper(BaseScraper):
+    pharmacy_slug = "drogaria-catarinense"
+    runtime_type = "http"
+    search_probe_format = "{base_domain}/api/catalog_system/pub/products/search?ft={encoded_term}"
+    search_probe_response_type = "json"
+    search_probe_expected_content_type = "application/json"
+    search_probe_expected_json_root = "list"
+
     def __init__(self):
         super().__init__("https://www.drogariacatarinense.com.br")
         self.base_domain = "https://www.drogariacatarinense.com.br"
@@ -75,7 +80,7 @@ class DrogariaCatarinenseScraper(BaseScraper):
                 }
             )
 
-        print(f"Catarinense: {len(products)} produtos coletados para o termo '{term}'.")
+        self.log_info("scraper_term_collected", term=term, products_found=len(products))
         return products
 
     def scrape(self):
@@ -94,121 +99,7 @@ class DrogariaCatarinenseScraper(BaseScraper):
         return all_products
 
     def save_to_db(self, products):
-        if not products:
-            print("Nenhum produto da Drogaria Catarinense encontrado para salvar.")
-            return
-
-        session = SessionLocal()
-        scrape_run = None
-        try:
-            pharmacy = session.query(Pharmacy).filter_by(slug="drogaria-catarinense").first()
-            if not pharmacy:
-                raise ValueError("Farmacia Drogaria Catarinense nao cadastrada. Rode src.init_db primeiro.")
-            matcher = ProductMatcher(session)
-            scrape_run = self.start_scrape_run(session, pharmacy, self.search_terms)
-            products_saved = 0
-
-            for product_data in products:
-                source_product = (
-                    session.query(SourceProduct)
-                    .filter_by(pharmacy_id=pharmacy.id, source_sku=product_data["source_sku"])
-                    .first()
-                )
-
-                if not source_product:
-                    source_product = SourceProduct(
-                        pharmacy_id=pharmacy.id,
-                        source_sku=product_data["source_sku"],
-                        source_url=product_data.get("source_url"),
-                        raw_name=product_data["raw_name"],
-                        normalized_name=product_data["normalized_name"],
-                        brand=product_data.get("brand"),
-                        manufacturer=product_data.get("manufacturer"),
-                        active_ingredient=product_data.get("active_ingredient"),
-                        dosage=product_data.get("dosage"),
-                        presentation=product_data.get("presentation"),
-                        pack_size=product_data.get("pack_size"),
-                        ean_gtin=product_data.get("ean_gtin"),
-                        anvisa_code=product_data.get("anvisa_code"),
-                        source_metadata=product_data.get("source_metadata"),
-                    )
-                    session.add(source_product)
-                    session.flush()
-                else:
-                    source_product.source_url = product_data.get("source_url")
-                    source_product.raw_name = product_data["raw_name"]
-                    source_product.normalized_name = product_data["normalized_name"]
-                    source_product.brand = product_data.get("brand")
-                    source_product.manufacturer = product_data.get("manufacturer")
-                    source_product.active_ingredient = product_data.get("active_ingredient")
-                    source_product.dosage = product_data.get("dosage")
-                    source_product.presentation = product_data.get("presentation")
-                    source_product.pack_size = product_data.get("pack_size")
-                    source_product.ean_gtin = product_data.get("ean_gtin")
-                    source_product.anvisa_code = product_data.get("anvisa_code")
-                    source_product.source_metadata = product_data.get("source_metadata")
-
-                decision = matcher.match_source_product(product_data)
-                canonical_product = decision.canonical_product or matcher.build_canonical_product(product_data)
-                decision = matcher.resolve_match_metadata(canonical_product, product_data)
-                if not source_product.match:
-                    session.add(
-                        ProductMatch(
-                            source_product_id=source_product.id,
-                            canonical_product_id=canonical_product.id,
-                            match_type=decision.match_type,
-                            confidence=decision.confidence,
-                            review_status=decision.review_status,
-                            review_notes=decision.review_notes,
-                        )
-                    )
-                else:
-                    source_product.match.canonical_product_id = canonical_product.id
-                    source_product.match.match_type = decision.match_type
-                    source_product.match.confidence = decision.confidence
-                    source_product.match.review_status = decision.review_status
-                    source_product.match.review_notes = decision.review_notes
-
-                matcher.reconcile_canonical_matches(canonical_product)
-
-                session.add(
-                    PriceSnapshot(
-                        source_product_id=source_product.id,
-                        scrape_run_id=scrape_run.id,
-                        price=product_data["price"],
-                        cep=self.cep,
-                        availability=product_data.get("availability", "unknown"),
-                        source_url=product_data.get("source_url"),
-                        promotion_text=product_data.get("promotion_text"),
-                    )
-                )
-                products_saved += 1
-
-            self.update_scrape_run(
-                session,
-                scrape_run.id,
-                status="completed",
-                products_seen=len(products),
-                products_saved=products_saved,
-            )
-            session.commit()
-            print(f"Sucesso: {len(products)} snapshots de precos da Drogaria Catarinense salvos no banco.")
-        except Exception as e:
-            session.rollback()
-            if scrape_run:
-                self.update_scrape_run(
-                    session,
-                    scrape_run.id,
-                    status="failed",
-                    products_seen=len(products),
-                    products_saved=0,
-                    error_count=1,
-                    error_message=str(e)[:500],
-                )
-                session.commit()
-            print(f"Erro ao salvar produtos da Drogaria Catarinense no banco: {e}")
-        finally:
-            session.close()
+        self.save_products_to_db(products)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, time, timedelta
 
 from src.core.config import settings
-from src.models.base import delete_old_prices
+from src.services.retention import purge_expired_operational_data
 from src.services.scheduled_collection import build_scheduled_collection_plan, run_scheduled_collection
 
 
@@ -102,7 +102,6 @@ def run_operational_cycle(*, cep: str | None = None, force_collection: bool = Fa
     if collection_due:
         collection_result = run_scheduled_collection(cep)
 
-    deleted_snapshots = delete_old_prices(retention_days=settings.PRICE_RETENTION_DAYS)
     return {
         "executed_at": (now or datetime.now(UTC).astimezone()).isoformat(),
         "schedule": schedule,
@@ -110,8 +109,5 @@ def run_operational_cycle(*, cep: str | None = None, force_collection: bool = Fa
         "collection_executed": collection_result is not None,
         "collection_plan": plan,
         "collection_result": collection_result,
-        "retention": {
-            "retention_days": settings.PRICE_RETENTION_DAYS,
-            "deleted_snapshots": deleted_snapshots,
-        },
+        "retention": purge_expired_operational_data(retention_days=settings.PRICE_RETENTION_DAYS, now=now),
     }

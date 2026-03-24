@@ -2,15 +2,18 @@ import asyncio
 import inspect
 from collections import defaultdict
 from datetime import UTC, datetime
+import logging
 import re
 
 from src.core.config import settings
+from src.core.logging import get_logger, log_event
 from src.models.base import SessionLocal, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.scraper_registry import SCRAPER_REGISTRY
 
 ACTIVE_DAYS = 30
 INACTIVE_DAYS = 90
+LOGGER = get_logger(__name__)
 
 
 def _tracked_item_status_for_scheduler(last_requested_at):
@@ -100,9 +103,11 @@ def build_scheduled_collection_plan(cep: str | None = None):
         return _plan_payload(grouped)
 
 
-def _run_scraper_for_terms(scraper, terms: list[str]):
+def _run_scraper_for_terms(scraper, terms: list[str], cep: str):
     original_terms = list(getattr(scraper, "search_terms", []) or [])
+    original_cep = getattr(scraper, "cep", None)
     scraper.search_terms = list(terms)
+    scraper.set_cep(cep)
     try:
         scrape_method = scraper.scrape
         if inspect.iscoroutinefunction(scrape_method):
@@ -118,6 +123,25 @@ def _run_scraper_for_terms(scraper, terms: list[str]):
         }
     finally:
         scraper.search_terms = original_terms
+        if original_cep:
+            scraper.cep = original_cep
+
+
+def _collection_run_status(scraper_results: list[dict]):
+    statuses = {result.get("status") or "failed" for result in scraper_results}
+    if not statuses or statuses == {"skipped"}:
+        return "skipped"
+    if statuses == {"completed"}:
+        return "completed"
+    if "completed" in statuses:
+        return "partial_success"
+    if "failed" in statuses:
+        return "failed"
+    return "skipped"
+
+
+def _should_mark_items_scraped(scraper_results: list[dict]):
+    return any(result.get("status") == "completed" for result in scraper_results)
 
 
 def _mark_items_scraped(session, items: list[TrackedItemByCep]):
@@ -128,6 +152,7 @@ def _mark_items_scraped(session, items: list[TrackedItemByCep]):
 
 
 def run_scheduled_collection(cep: str | None = None):
+    log_event(LOGGER, logging.INFO, "scheduled_collection_started", cep=cep)
     with SessionLocal() as session:
         refresh_tracked_items_for_scheduler(session, cep)
         query = session.query(TrackedItemByCep)
@@ -142,19 +167,22 @@ def run_scheduled_collection(cep: str | None = None):
 
         results = []
         for plan_cep, plan_items in grouped.items():
-            if plan_cep != settings.CEP:
+            queries = [item.query for item in plan_items]
+            search_terms = list(dict.fromkeys(_collection_search_term(item) for item in plan_items if _collection_search_term(item)))
+            if not search_terms:
                 results.append(
                     {
                         "cep": plan_cep,
                         "status": "skipped",
-                        "message": f"CEP {plan_cep} ainda nao esta habilitado no runtime atual.",
-                        "queries": [item.query for item in plan_items],
+                        "message": "Nenhum termo de busca valido foi derivado para os itens rastreados deste CEP.",
+                        "queries": queries,
+                        "tracked_item_ids": [item.id for item in plan_items],
+                        "tracked_items_marked_scraped": False,
+                        "scrapers": [],
                     }
                 )
                 continue
 
-            queries = [item.query for item in plan_items]
-            search_terms = list(dict.fromkeys(_collection_search_term(item) for item in plan_items if _collection_search_term(item)))
             scraper_results = []
             for scraper_slug, runtime_type, scraper_cls in SCRAPER_REGISTRY:
                 if runtime_type == "browser" and not settings.SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS:
@@ -171,7 +199,7 @@ def run_scheduled_collection(cep: str | None = None):
 
                 scraper = scraper_cls()
                 try:
-                    result = _run_scraper_for_terms(scraper, search_terms)
+                    result = _run_scraper_for_terms(scraper, search_terms, plan_cep)
                     scraper_results.append(
                         {
                             "pharmacy_slug": scraper_slug,
@@ -190,20 +218,26 @@ def run_scheduled_collection(cep: str | None = None):
                         }
                     )
 
-            _mark_items_scraped(session, plan_items)
+            collection_status = _collection_run_status(scraper_results)
+            marked_items_scraped = _should_mark_items_scraped(scraper_results)
+            if marked_items_scraped:
+                _mark_items_scraped(session, plan_items)
             results.append(
                     {
                         "cep": plan_cep,
-                        "status": "completed",
+                        "status": collection_status,
                         "queries": queries,
                         "search_terms": search_terms,
                         "tracked_item_ids": [item.id for item in plan_items],
+                        "tracked_items_marked_scraped": marked_items_scraped,
                         "scrapers": scraper_results,
                     }
             )
 
-        return {
+        payload = {
             "executed_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
             "plan": _plan_payload(grouped),
             "results": results,
         }
+        log_event(LOGGER, logging.INFO, "scheduled_collection_completed", cep=cep, cep_count=len(results))
+        return payload

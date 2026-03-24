@@ -1,6 +1,9 @@
 import argparse
 
+from src.core.logging import get_logger, log_event
 from src.services.search_jobs import process_next_search_job, process_search_job
+
+LOGGER = get_logger(__name__)
 
 
 def main():
@@ -15,9 +18,10 @@ def main():
         job = process_next_search_job()
 
     if not job:
-        print("Nenhum search job pendente na fila.")
+        log_event(LOGGER, 20, "search_job_cli_no_pending_jobs")
         return
 
+    log_event(LOGGER, 20, "search_job_cli_processed", search_job_id=job.id, status=job.status)
     print(
         {
             "job_id": job.id,

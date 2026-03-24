@@ -2,7 +2,8 @@ from pathlib import Path
 import sys
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -13,11 +14,13 @@ from src.api.catalog_routes import router as catalog_router
 from src.api.deps import get_db
 from src.api.ops_routes import router as ops_router
 from src.core.config import settings
+from src.core.logging import configure_logging
 from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     build_latest_price_map,
     canonical_offer_payload,
     snapshot_freshness_payload,
+    validate_cep_context,
 )
 from src.services.ops import ops_health_payload as _ops_health_payload
 from src.services.ops import pharmacy_metrics as _pharmacy_metrics
@@ -38,9 +41,14 @@ from src.services.tool_use import (
     search_products_service,
 )
 
+configure_logging()
 app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 app.include_router(catalog_router)
 app.include_router(ops_router)
+
+
+def _validated_optional_cep(cep):
+    return validate_cep_context(cep) if isinstance(cep, str) and cep else None
 
 
 @app.get("/")
@@ -51,6 +59,7 @@ def read_root():
         "active_cep": settings.CEP,
         "model": "source_product + canonical_product + price_snapshot",
         "comparison_endpoints": ["/comparison/canonical-products", "/comparison/canonical/{id}"],
+        "health_endpoints": ["/health/live", "/health/ready"],
         "operational_endpoints": [
             "/catalog/requests",
             "/search-jobs",
@@ -58,10 +67,14 @@ def read_root():
             "/tracked-items",
             "/ops/collection-plan",
             "/ops/schedule",
+            "/ops/health/scrapers",
+            "/ops/health/pages",
             "/ops/collections/run",
             "/ops/cycle/run",
             "/ops/health",
             "/ops/metrics",
+            "/ops/jobs",
+            "/ops/jobs/{operation_job_id}",
             "/ops/scrape-runs",
             "/ops/search-jobs/process-next",
             "/ops/search-jobs/{job_id}/process",
@@ -77,15 +90,23 @@ def read_root():
 
 
 @app.get("/products")
-def list_source_products(db: Session = Depends(get_db)):
-    products = (
-        db.query(SourceProduct)
-        .options(
-            joinedload(SourceProduct.pharmacy),
-            joinedload(SourceProduct.match).joinedload(ProductMatch.canonical_product),
-        )
-        .all()
+def list_source_products(
+    cep: str | None = Query(None, min_length=8),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    normalized_cep = _validated_optional_cep(cep)
+    query = db.query(SourceProduct).options(
+        joinedload(SourceProduct.pharmacy),
+        joinedload(SourceProduct.match).joinedload(ProductMatch.canonical_product),
     )
+    if normalized_cep:
+        source_product_ids = list(build_latest_price_map(db, normalized_cep).keys())
+        if not source_product_ids:
+            return []
+        query = query.filter(SourceProduct.id.in_(source_product_ids))
+    products = query.order_by(SourceProduct.id.desc()).offset(offset).limit(limit).all()
 
     return [
         {
@@ -109,7 +130,14 @@ def list_source_products(db: Session = Depends(get_db)):
 
 
 @app.get("/prices/{source_product_id}")
-def get_product_prices(source_product_id: int, db: Session = Depends(get_db)):
+def get_product_prices(
+    source_product_id: int,
+    cep: str | None = Query(None, min_length=8),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    normalized_cep = _validated_optional_cep(cep)
     product = (
         db.query(SourceProduct)
         .options(joinedload(SourceProduct.pharmacy), joinedload(SourceProduct.match))
@@ -119,12 +147,10 @@ def get_product_prices(source_product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Produto de origem nao encontrado")
 
-    prices = (
-        db.query(PriceSnapshot)
-        .filter(PriceSnapshot.source_product_id == source_product_id)
-        .order_by(PriceSnapshot.captured_at.desc())
-        .all()
-    )
+    query = db.query(PriceSnapshot).filter(PriceSnapshot.source_product_id == source_product_id)
+    if normalized_cep:
+        query = query.filter(PriceSnapshot.cep == normalized_cep)
+    prices = query.order_by(PriceSnapshot.captured_at.desc()).offset(offset).limit(limit).all()
 
     return {
         "source_product": {
@@ -137,6 +163,7 @@ def get_product_prices(source_product_id: int, db: Session = Depends(get_db)):
             "match_confidence": product.match.confidence if product.match else None,
             "review_status": product.match.review_status if product.match else None,
             "review_notes": product.match.review_notes if product.match else None,
+            "requested_cep": normalized_cep,
         },
         "history": [
             {
@@ -153,8 +180,27 @@ def get_product_prices(source_product_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/canonical-products")
-def list_canonical_products(db: Session = Depends(get_db)):
-    products = db.query(CanonicalProduct).all()
+def list_canonical_products(
+    cep: str | None = Query(None, min_length=8),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    normalized_cep = _validated_optional_cep(cep)
+    query = db.query(CanonicalProduct)
+    if normalized_cep:
+        source_product_ids = list(build_latest_price_map(db, normalized_cep).keys())
+        if not source_product_ids:
+            return []
+        canonical_ids = {
+            match.canonical_product_id
+            for match in db.query(ProductMatch).filter(ProductMatch.source_product_id.in_(source_product_ids)).all()
+            if match.canonical_product_id
+        }
+        if not canonical_ids:
+            return []
+        query = query.filter(CanonicalProduct.id.in_(canonical_ids))
+    products = query.order_by(CanonicalProduct.id.desc()).offset(offset).limit(limit).all()
     return [
         {
             "id": product.id,
@@ -171,20 +217,48 @@ def list_canonical_products(db: Session = Depends(get_db)):
 
 
 @app.get("/comparison/canonical-products")
-def compare_canonical_products(db: Session = Depends(get_db)):
+def compare_canonical_products(
+    cep: str = Query(..., min_length=8),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    min_matches: int = Query(2, ge=2, le=20),
+    db: Session = Depends(get_db),
+):
+    normalized_cep = validate_cep_context(cep)
+    canonical_ids = [
+        canonical_id
+        for canonical_id, in (
+            db.query(CanonicalProduct.id)
+            .join(CanonicalProduct.matches)
+            .group_by(CanonicalProduct.id)
+            .having(func.count(ProductMatch.id) >= min_matches)
+            .order_by(CanonicalProduct.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+    ]
+    if not canonical_ids:
+        return []
+
     canonical_products = (
         db.query(CanonicalProduct)
         .options(
-            joinedload(CanonicalProduct.matches)
-            .joinedload(ProductMatch.source_product)
-            .joinedload(SourceProduct.pharmacy)
+            selectinload(CanonicalProduct.matches)
+            .selectinload(ProductMatch.source_product)
+            .selectinload(SourceProduct.pharmacy)
         )
+        .filter(CanonicalProduct.id.in_(canonical_ids))
         .all()
     )
-    latest_prices = build_latest_price_map(db)
+    products_by_id = {product.id: product for product in canonical_products}
+    latest_prices = build_latest_price_map(db, normalized_cep)
 
     results = []
-    for canonical_product in canonical_products:
+    for canonical_id in canonical_ids:
+        canonical_product = products_by_id.get(canonical_id)
+        if not canonical_product:
+            continue
         offers = canonical_offer_payload(canonical_product, latest_prices)
         if len(offers) < 2:
             continue
@@ -203,16 +277,25 @@ def compare_canonical_products(db: Session = Depends(get_db)):
 
 
 @app.get("/comparison/canonical/{canonical_product_id}")
-def compare_single_canonical_product(canonical_product_id: int, db: Session = Depends(get_db)):
+def compare_single_canonical_product(
+    canonical_product_id: int,
+    cep: str = Query(..., min_length=8),
+    db: Session = Depends(get_db),
+):
     try:
-        return compare_canonical_product_service(canonical_product_id, db)
+        return compare_canonical_product_service(canonical_product_id, cep, db)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/matching/review")
-def list_pending_reviews(db: Session = Depends(get_db)):
-    return list_review_matches_service(db)
+def list_pending_reviews(
+    cep: str | None = Query(None, min_length=8),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    return list_review_matches_service(db, cep=_validated_optional_cep(cep), limit=limit, offset=offset)
 
 
 @app.get("/tool/search-products")

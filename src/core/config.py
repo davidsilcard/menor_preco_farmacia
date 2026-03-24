@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 import os
 from dotenv import load_dotenv
 
@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     SCHEDULED_COLLECTION_SLOTS: str = os.getenv("SCHEDULED_COLLECTION_SLOTS", "08:00,15:00")
     SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES: int = int(os.getenv("SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES", "120"))
     PRICE_RETENTION_DAYS: int = int(os.getenv("PRICE_RETENTION_DAYS", "90"))
+    MCP_EXPOSE_ADMIN_TOOLS: bool = os.getenv("MCP_EXPOSE_ADMIN_TOOLS", "false").lower() == "true"
 
     @property
     def DATABASE_URL(self) -> str:
@@ -41,4 +42,3 @@ class Settings(BaseSettings):
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.POSTGRES_DB}"
 
 settings = Settings()
-print(f"DEBUG: Conectando em {settings.DB_HOST} no banco {settings.POSTGRES_DB}")

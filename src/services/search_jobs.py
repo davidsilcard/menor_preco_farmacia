@@ -1,8 +1,10 @@
 import asyncio
 import inspect
+import logging
 from datetime import UTC, datetime
 
 from src.core.config import settings
+from src.core.logging import get_logger, log_event
 from src.models.base import CatalogRequest, SearchJob, SessionLocal
 from src.services.catalog_queries import (
     best_pricing_offer,
@@ -13,6 +15,8 @@ from src.services.catalog_queries import (
 )
 from src.services.scraper_registry import SCRAPER_REGISTRY
 from src.services.tool_use import item_availability_summary
+
+LOGGER = get_logger(__name__)
 
 
 def _json_safe(value):
@@ -66,9 +70,11 @@ def _job_completion_status(scraper_results: list[dict]):
     return "partial_success"
 
 
-def _run_scraper_for_terms(scraper, terms: list[str]):
+def _run_scraper_for_terms(scraper, terms: list[str], cep: str):
     original_terms = list(getattr(scraper, "search_terms", []) or [])
+    original_cep = getattr(scraper, "cep", None)
     scraper.search_terms = list(terms)
+    scraper.set_cep(cep)
     try:
         scrape_method = scraper.scrape
         if inspect.iscoroutinefunction(scrape_method):
@@ -84,10 +90,12 @@ def _run_scraper_for_terms(scraper, terms: list[str]):
         }
     finally:
         scraper.search_terms = original_terms
+        if original_cep:
+            scraper.cep = original_cep
 
 
-def _job_search_result_payload(session, query: str):
-    latest_prices = build_latest_price_map(session)
+def _job_search_result_payload(session, query: str, cep: str):
+    latest_prices = build_latest_price_map(session, cep)
     matches = find_matching_canonicals(session, query)
     results = [
         {
@@ -160,6 +168,14 @@ def process_search_job(job_id: int | None = None):
         job.updated_at = now
         session.commit()
         session.refresh(job)
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "search_job_processing_started",
+            search_job_id=job.id,
+            query=job.query,
+            cep=job.cep,
+        )
 
         scraper_results = []
         search_terms = preferred_search_terms(job.query) or [job.query]
@@ -178,7 +194,7 @@ def process_search_job(job_id: int | None = None):
                     continue
                 scraper = scraper_cls()
                 try:
-                    result = _run_scraper_for_terms(scraper, search_terms)
+                    result = _run_scraper_for_terms(scraper, search_terms, job.cep)
                     scraper_results.append(
                         {
                             "pharmacy_slug": scraper_slug,
@@ -199,7 +215,7 @@ def process_search_job(job_id: int | None = None):
                         }
                     )
 
-            search_results = _job_search_result_payload(session, job.query)
+            search_results = _job_search_result_payload(session, job.query, job.cep)
             warnings = _job_warnings(scraper_results, search_results)
             final_status = _job_completion_status(scraper_results)
             payload = {
@@ -217,10 +233,26 @@ def process_search_job(job_id: int | None = None):
                 },
                 "search_results": search_results,
             }
-            return _complete_job(session, job, status=final_status, result_payload=payload)
+            completed_job = _complete_job(session, job, status=final_status, result_payload=payload)
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "search_job_processing_completed",
+                search_job_id=completed_job.id,
+                status=completed_job.status,
+            )
+            return completed_job
         except Exception as exc:
             session.rollback()
-            return _complete_job(session, job, status="failed", error_message=str(exc)[:500])
+            failed_job = _complete_job(session, job, status="failed", error_message=str(exc)[:500])
+            log_event(
+                LOGGER,
+                logging.ERROR,
+                "search_job_processing_failed",
+                search_job_id=failed_job.id,
+                error_message=failed_job.error_message,
+            )
+            return failed_job
 
 
 def process_next_search_job():

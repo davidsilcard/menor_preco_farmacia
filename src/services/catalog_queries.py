@@ -2,9 +2,9 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Session, selectinload
 
-from src.core.config import settings
 from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SourceProduct
 from src.scrapers.base import BaseScraper
 
@@ -99,26 +99,52 @@ def normalize_cep(value: str) -> str:
 
 def validate_cep_context(cep: str):
     requested_cep = normalize_cep(cep)
-    active_cep = normalize_cep(settings.CEP)
     if not requested_cep:
-        raise HTTPException(status_code=400, detail="CEP e obrigatorio para consultar preços por regiao.")
-    if requested_cep != active_cep:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Os dados atuais foram coletados para o CEP {settings.CEP}. Recolete os scrapers para o CEP solicitado.",
-        )
+        raise HTTPException(status_code=400, detail="CEP e obrigatorio para consultar precos por regiao.")
+    if len(requested_cep) != 8:
+        raise HTTPException(status_code=400, detail="CEP invalido; informe um CEP com 8 digitos.")
     return requested_cep
 
 
-def build_latest_price_map(db: Session):
-    snapshots = (
-        db.query(PriceSnapshot)
-        .order_by(PriceSnapshot.source_product_id.asc(), PriceSnapshot.captured_at.desc())
-        .all()
-    )
+def build_latest_price_map(db: Session, cep: str | None = None):
+    normalized_cep = normalize_cep(cep) if cep else None
+    try:
+        latest_snapshot_query = db.query(
+            PriceSnapshot.source_product_id.label("source_product_id"),
+            func.max(PriceSnapshot.captured_at).label("latest_captured_at"),
+        )
+        if normalized_cep:
+            latest_snapshot_query = latest_snapshot_query.filter(PriceSnapshot.cep == normalized_cep)
+        latest_snapshot_subquery = latest_snapshot_query.group_by(PriceSnapshot.source_product_id).subquery()
+
+        snapshots_query = db.query(PriceSnapshot).join(
+            latest_snapshot_subquery,
+            and_(
+                PriceSnapshot.source_product_id == latest_snapshot_subquery.c.source_product_id,
+                PriceSnapshot.captured_at == latest_snapshot_subquery.c.latest_captured_at,
+            ),
+        )
+        if normalized_cep:
+            snapshots_query = snapshots_query.filter(PriceSnapshot.cep == normalized_cep)
+        snapshots = snapshots_query.all()
+    except (AttributeError, TypeError):
+        snapshots = db.query(PriceSnapshot).all()
+        if normalized_cep:
+            snapshots = [snapshot for snapshot in snapshots if normalize_cep(snapshot.cep) == normalized_cep]
+
     latest_by_source_product = {}
     for snapshot in snapshots:
-        latest_by_source_product.setdefault(snapshot.source_product_id, snapshot)
+        current = latest_by_source_product.get(snapshot.source_product_id)
+        current_key = (
+            getattr(current, "captured_at", None),
+            getattr(current, "id", 0) or 0,
+        )
+        candidate_key = (
+            getattr(snapshot, "captured_at", None),
+            getattr(snapshot, "id", 0) or 0,
+        )
+        if current is None or candidate_key > current_key:
+            latest_by_source_product[snapshot.source_product_id] = snapshot
     return latest_by_source_product
 
 
@@ -382,16 +408,90 @@ def score_canonical_match(canonical_product: CanonicalProduct, query: str):
     return score
 
 
-def find_matching_canonicals(db: Session, query: str, limit: int = 5):
-    canonical_products = (
-        db.query(CanonicalProduct)
-        .options(
-            joinedload(CanonicalProduct.matches)
-            .joinedload(ProductMatch.source_product)
-            .joinedload(SourceProduct.pharmacy)
+def _canonical_loader_options():
+    return (
+        selectinload(CanonicalProduct.matches)
+        .selectinload(ProductMatch.source_product)
+        .selectinload(SourceProduct.pharmacy),
+    )
+
+
+def _candidate_tokens_for_query(query: str):
+    normalized_query = normalize_query(query)
+    strong_identifiers = re.findall(r"\b\d{8,14}\b", normalized_query)
+    anchor_tokens = sorted(anchor_search_tokens(normalized_query))
+    if anchor_tokens:
+        return normalized_query, strong_identifiers, anchor_tokens[:3]
+
+    fallback_tokens = [
+        token
+        for token in tokenize_search_text(normalized_query)
+        if len(token) >= 3 and not re.fullmatch(r"\d+(?:[.,]\d+)?", token)
+    ]
+    return normalized_query, strong_identifiers, fallback_tokens[:3]
+
+
+def _prefilter_canonical_ids(db: Session, query: str, limit: int):
+    normalized_query, strong_identifiers, candidate_tokens = _candidate_tokens_for_query(query)
+    filters = []
+
+    if strong_identifiers:
+        filters.append(or_(CanonicalProduct.ean_gtin.in_(strong_identifiers), CanonicalProduct.anvisa_code.in_(strong_identifiers)))
+
+    for token in candidate_tokens:
+        like_token = f"%{token}%"
+        filters.append(
+            or_(
+                CanonicalProduct.normalized_name.ilike(like_token),
+                CanonicalProduct.brand.ilike(like_token),
+                CanonicalProduct.active_ingredient.ilike(like_token),
+                CanonicalProduct.manufacturer.ilike(like_token),
+                SourceProduct.normalized_name.ilike(like_token),
+            )
         )
+
+    if not filters and normalized_query:
+        like_query = f"%{normalized_query}%"
+        filters.append(
+            or_(
+                CanonicalProduct.normalized_name.ilike(like_query),
+                SourceProduct.normalized_name.ilike(like_query),
+            )
+        )
+
+    if not filters:
+        return None
+
+    candidate_rows = (
+        db.query(CanonicalProduct.id)
+        .outerjoin(CanonicalProduct.matches)
+        .outerjoin(ProductMatch.source_product)
+        .filter(or_(*filters))
+        .distinct()
+        .limit(max(limit * 20, 60))
         .all()
     )
+    return [row[0] for row in candidate_rows]
+
+
+def _load_candidate_canonicals(db: Session, query: str, limit: int):
+    try:
+        candidate_ids = _prefilter_canonical_ids(db, query, limit)
+        if candidate_ids:
+            return (
+                db.query(CanonicalProduct)
+                .options(*_canonical_loader_options())
+                .filter(CanonicalProduct.id.in_(candidate_ids))
+                .all()
+            )
+    except (AttributeError, TypeError, AssertionError):
+        pass
+
+    return db.query(CanonicalProduct).options(*_canonical_loader_options()).all()
+
+
+def find_matching_canonicals(db: Session, query: str, limit: int = 5):
+    canonical_products = _load_candidate_canonicals(db, query, limit)
 
     ranked = []
     for canonical_product in canonical_products:

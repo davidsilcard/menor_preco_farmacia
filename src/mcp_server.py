@@ -2,7 +2,9 @@ import json
 import sys
 from typing import Any
 
+from src.core.config import settings
 from src.models.base import SearchJob, SessionLocal
+from src.services.catalog_queries import normalize_cep
 from src.services.demand_tracking import search_job_payload
 from src.services.tool_models import (
     InvoiceComparisonRequest,
@@ -23,6 +25,10 @@ from src.services.tool_use import (
 
 SERVER_NAME = "super-melhor-preco-farmacia"
 SERVER_VERSION = "0.1.0"
+
+
+def _admin_tools_enabled():
+    return settings.MCP_EXPOSE_ADMIN_TOOLS
 
 
 def _read_message():
@@ -65,7 +71,7 @@ def _error_response(message_id: Any, code: int, message: str):
 
 
 def _tool_definitions():
-    return [
+    tools = [
         {
             "name": "search_products",
             "description": "Busca produtos canonicos e ofertas atuais a partir de um texto livre.",
@@ -179,16 +185,9 @@ def _tool_definitions():
                 "type": "object",
                 "properties": {
                     "canonical_product_id": {"type": "integer"},
+                    "cep": {"type": "string"},
                 },
-                "required": ["canonical_product_id"],
-            },
-        },
-        {
-            "name": "list_review_matches",
-            "description": "Lista matches que ainda precisam de revisao manual.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
+                "required": ["canonical_product_id", "cep"],
             },
         },
         {
@@ -198,19 +197,41 @@ def _tool_definitions():
                 "type": "object",
                 "properties": {
                     "job_id": {"type": "integer"},
+                    "cep": {"type": "string"},
                 },
-                "required": ["job_id"],
-            },
-        },
-        {
-            "name": "list_search_jobs",
-            "description": "Lista os jobs de busca sob demanda mais recentes.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
+                "required": ["job_id", "cep"],
             },
         },
     ]
+
+    if _admin_tools_enabled():
+        tools.extend(
+            [
+                {
+                    "name": "list_review_matches",
+                    "description": "Lista matches que ainda precisam de revisao manual.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "cep": {"type": "string"},
+                        },
+                        "required": ["cep"],
+                    },
+                },
+                {
+                    "name": "list_search_jobs",
+                    "description": "Lista os jobs de busca sob demanda mais recentes.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "cep": {"type": "string"},
+                        },
+                        "required": ["cep"],
+                    },
+                },
+            ]
+        )
+    return tools
 
 
 def _tool_result(payload: Any):
@@ -263,16 +284,31 @@ def _call_tool(name: str, arguments: dict):
         elif name == "search_observed_item":
             result = search_observed_item_service(ObservedItemRequest.model_validate(arguments), session)
         elif name == "compare_canonical_product":
-            result = compare_canonical_product_service(int(_require(arguments, "canonical_product_id")), session)
+            result = compare_canonical_product_service(
+                int(_require(arguments, "canonical_product_id")),
+                _require(arguments, "cep"),
+                session,
+            )
         elif name == "list_review_matches":
-            result = list_review_matches_service(session)
+            if not _admin_tools_enabled():
+                raise ValueError("Tool desabilitada no MCP atual: list_review_matches")
+            result = list_review_matches_service(session, cep=_require(arguments, "cep"))
         elif name == "get_search_job":
+            requested_cep = normalize_cep(_require(arguments, "cep"))
             job = session.get(SearchJob, int(_require(arguments, "job_id")))
-            if not job:
+            if not job or job.cep != requested_cep:
                 raise ValueError("Search job nao encontrado")
             result = search_job_payload(job, session)
         elif name == "list_search_jobs":
-            jobs = session.query(SearchJob).order_by(SearchJob.created_at.desc(), SearchJob.id.desc()).all()
+            if not _admin_tools_enabled():
+                raise ValueError("Tool desabilitada no MCP atual: list_search_jobs")
+            requested_cep = normalize_cep(_require(arguments, "cep"))
+            jobs = (
+                session.query(SearchJob)
+                .filter(SearchJob.cep == requested_cep)
+                .order_by(SearchJob.created_at.desc(), SearchJob.id.desc())
+                .all()
+            )
             result = [search_job_payload(job, session) for job in jobs]
         else:
             raise ValueError(f"Tool desconhecida: {name}")

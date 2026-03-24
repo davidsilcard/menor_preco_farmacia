@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.models.base import CatalogRequest, CanonicalProduct, SearchJob, TrackedItemByCep
@@ -302,21 +303,48 @@ def register_search_job(
     return job
 
 
-def queue_metrics(db: Session):
-    jobs = db.query(SearchJob).all()
-    queued = [job for job in jobs if job.status == "queued"]
-    processing = [job for job in jobs if job.status == "processing"]
-    failed = [job for job in jobs if job.status == "failed"]
-    completed = [job for job in jobs if job.status == "completed"]
-    return {
-        "total_jobs": len(jobs),
-        "queued_jobs": len(queued),
-        "processing_jobs": len(processing),
-        "completed_jobs": len(completed),
-        "failed_jobs": len(failed),
-        "oldest_queued_job_minutes": (
-            data_age_minutes(min(job.created_at for job in queued))
-            if queued
-            else None
-        ),
-    }
+def queue_metrics(db: Session, cep: str | None = None):
+    try:
+        status_query = db.query(SearchJob.status, func.count(SearchJob.id).label("count"))
+        if cep:
+            status_query = status_query.filter(SearchJob.cep == cep)
+        status_rows = status_query.group_by(SearchJob.status).all()
+        counts = {
+            getattr(row, "status", row[0]): int(getattr(row, "count", row[1]) or 0)
+            for row in status_rows
+        }
+        oldest_queued_query = db.query(func.min(SearchJob.created_at).label("oldest_created_at")).filter(SearchJob.status == "queued")
+        if cep:
+            oldest_queued_query = oldest_queued_query.filter(SearchJob.cep == cep)
+        oldest_queued_row = oldest_queued_query.first()
+        oldest_queued = None
+        if oldest_queued_row:
+            oldest_queued = getattr(oldest_queued_row, "oldest_created_at", oldest_queued_row[0])
+        return {
+            "total_jobs": sum(counts.values()),
+            "queued_jobs": counts.get("queued", 0),
+            "processing_jobs": counts.get("processing", 0),
+            "completed_jobs": counts.get("completed", 0),
+            "failed_jobs": counts.get("failed", 0),
+            "oldest_queued_job_minutes": data_age_minutes(oldest_queued) if oldest_queued else None,
+        }
+    except (AttributeError, TypeError, AssertionError):
+        jobs = db.query(SearchJob).all()
+        if cep:
+            jobs = [job for job in jobs if job.cep == cep]
+        queued = [job for job in jobs if job.status == "queued"]
+        processing = [job for job in jobs if job.status == "processing"]
+        failed = [job for job in jobs if job.status == "failed"]
+        completed = [job for job in jobs if job.status == "completed"]
+        return {
+            "total_jobs": len(jobs),
+            "queued_jobs": len(queued),
+            "processing_jobs": len(processing),
+            "completed_jobs": len(completed),
+            "failed_jobs": len(failed),
+            "oldest_queued_job_minutes": (
+                data_age_minutes(min(job.created_at for job in queued))
+                if queued
+                else None
+            ),
+        }

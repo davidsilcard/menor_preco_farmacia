@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
     Boolean,
@@ -177,6 +177,24 @@ class SearchJob(Base):
     catalog_request_id = Column(Integer, ForeignKey("catalog_requests.id"), index=True)
 
 
+class OperationJob(Base):
+    __tablename__ = "operation_jobs"
+
+    id = Column(Integer, primary_key=True)
+    job_type = Column(String, nullable=False, index=True)
+    requested_by = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="queued", index=True)
+    request_count = Column(Integer, nullable=False, default=1)
+    payload = Column(JSON)
+    payload_fingerprint = Column(String, nullable=False, index=True)
+    result_payload = Column(JSON)
+    error_message = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+
+
 class TrackedItemByCep(Base):
     __tablename__ = "tracked_items_by_cep"
     __table_args__ = (
@@ -208,7 +226,7 @@ def delete_old_prices(*, retention_days: int | None = None, session_factory=None
     """Remove snapshots capturados antes da janela de retencao configurada."""
     retention_days = retention_days or settings.PRICE_RETENTION_DAYS
     session_factory = session_factory or SessionLocal
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
     with session_factory() as session:
         stmt = delete(PriceSnapshot).where(PriceSnapshot.captured_at < cutoff)
         result = session.execute(stmt)

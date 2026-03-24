@@ -19,6 +19,11 @@ from src.services.demand_tracking import (
     search_job_payload,
     tracked_item_payload,
 )
+from src.services.operation_jobs import (
+    JOB_TYPE_PROCESS_SEARCH_JOB,
+    enqueue_operation_job,
+    operation_job_payload,
+)
 from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
@@ -35,6 +40,18 @@ def tool_response(tool_name: str, tool_input: dict, result, confidence: float, w
         "warnings": warnings or [],
         "result": result,
     }
+
+
+def _enqueue_search_job_processing(db: Session, *, search_job, requested_by: str):
+    if not search_job:
+        return None
+    operation_job = enqueue_operation_job(
+        db,
+        job_type=JOB_TYPE_PROCESS_SEARCH_JOB,
+        requested_by=requested_by,
+        payload={"search_job_id": search_job.id, "cep": search_job.cep},
+    )
+    return operation_job_payload(operation_job)
 
 
 def estimate_overall_confidence(items: list[dict]):
@@ -219,7 +236,7 @@ def availability_warnings(items: list[dict]):
 
 def search_products_service(query: str, cep: str, db: Session):
     requested_cep = validate_cep_context(cep)
-    latest_prices = build_latest_price_map(db)
+    latest_prices = build_latest_price_map(db, requested_cep)
     matches = find_matching_canonicals(db, query)
     results = [
         {
@@ -240,6 +257,7 @@ def search_products_service(query: str, cep: str, db: Session):
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     catalog_request = None
     search_job = None
+    operation_job = None
     tracked_item = None
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
     if results and confidence < 0.5:
@@ -258,13 +276,20 @@ def search_products_service(query: str, cep: str, db: Session):
         tracked_item = register_tracked_item(db, query, requested_cep, "search_products", source_kind="direct_search", match_confidence=0.0)
         catalog_request = register_catalog_request(db, query, requested_cep, "search_products")
         search_job = register_search_job(db, query, requested_cep, "search_products", catalog_request)
+        operation_job = _enqueue_search_job_processing(db, search_job=search_job, requested_by="tool_search_products")
         warnings.append("Item registrado para enriquecimento futuro do catalogo.")
         warnings.append("Busca sob demanda adicionada a fila de processamento.")
 
     return tool_response(
         "search_products",
         {"query": query, "cep": cep},
-        {"results": results, "catalog_request": catalog_request_payload(catalog_request), "search_job": search_job_payload(search_job, db), "tracked_item": tracked_item_payload(tracked_item)},
+        {
+            "results": results,
+            "catalog_request": catalog_request_payload(catalog_request),
+            "search_job": search_job_payload(search_job, db),
+            "operation_job": operation_job,
+            "tracked_item": tracked_item_payload(tracked_item),
+        },
         confidence,
         warnings,
     )
@@ -272,11 +297,12 @@ def search_products_service(query: str, cep: str, db: Session):
 
 def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
-    latest_prices = build_latest_price_map(db)
+    latest_prices = build_latest_price_map(db, requested_cep)
     comparisons = []
     scores = []
     catalog_requests = []
     search_jobs = []
+    operation_jobs = []
     tracked_items = []
 
     for item in payload.items:
@@ -289,6 +315,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
             catalog_requests.append(catalog_request_payload(catalog_request))
             search_job = register_search_job(db, item, requested_cep, "compare_shopping_list", catalog_request)
             search_jobs.append(search_job_payload(search_job, db))
+            operation_jobs.append(_enqueue_search_job_processing(db, search_job=search_job, requested_by="tool_compare_shopping_list"))
             continue
 
         score, canonical_product = matches[0]
@@ -327,7 +354,13 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     return tool_response(
         "compare_shopping_list",
         payload.model_dump(),
-        {**build_basket_result(comparisons), "catalog_requests": catalog_requests, "search_jobs": search_jobs, "tracked_items": tracked_items},
+        {
+            **build_basket_result(comparisons),
+            "catalog_requests": catalog_requests,
+            "search_jobs": search_jobs,
+            "operation_jobs": operation_jobs,
+            "tracked_items": tracked_items,
+        },
         min((sum(scores) / len(scores)) / 100, 1.0) if scores else 0.0,
         warnings,
     )
@@ -341,11 +374,12 @@ def compare_basket_service(payload: ShoppingListRequest, db: Session):
 
 def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
-    latest_prices = build_latest_price_map(db)
+    latest_prices = build_latest_price_map(db, requested_cep)
     comparisons = []
     max_score = 0
     catalog_requests = []
     search_jobs = []
+    operation_jobs = []
     tracked_items = []
 
     for item in payload.items:
@@ -358,6 +392,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
             catalog_requests.append(catalog_request_payload(catalog_request))
             search_job = register_search_job(db, item.description, requested_cep, "compare_invoice_items", catalog_request)
             search_jobs.append(search_job_payload(search_job, db))
+            operation_jobs.append(_enqueue_search_job_processing(db, search_job=search_job, requested_by="tool_compare_invoice_items"))
             continue
 
         score, canonical_product = matches[0]
@@ -402,7 +437,14 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     return tool_response(
         "compare_invoice_items",
         payload.model_dump(),
-        {"items": comparisons, "total_potential_savings": total_potential_savings, "catalog_requests": catalog_requests, "search_jobs": search_jobs, "tracked_items": tracked_items},
+        {
+            "items": comparisons,
+            "total_potential_savings": total_potential_savings,
+            "catalog_requests": catalog_requests,
+            "search_jobs": search_jobs,
+            "operation_jobs": operation_jobs,
+            "tracked_items": tracked_items,
+        },
         min(max_score / 100, 1.0) if comparisons else 0.0,
         warnings,
     )
@@ -419,7 +461,16 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
     return tool_response(
         "compare_receipt",
         payload.model_dump(),
-        {"merchant_name": payload.merchant_name, "captured_at": payload.captured_at, **build_basket_result(items), "summary": summary, "catalog_requests": invoice_result["result"].get("catalog_requests", []), "search_jobs": invoice_result["result"].get("search_jobs", []), "tracked_items": invoice_result["result"].get("tracked_items", [])},
+        {
+            "merchant_name": payload.merchant_name,
+            "captured_at": payload.captured_at,
+            **build_basket_result(items),
+            "summary": summary,
+            "catalog_requests": invoice_result["result"].get("catalog_requests", []),
+            "search_jobs": invoice_result["result"].get("search_jobs", []),
+            "operation_jobs": invoice_result["result"].get("operation_jobs", []),
+            "tracked_items": invoice_result["result"].get("tracked_items", []),
+        },
         estimate_overall_confidence(items),
         warnings,
     )
@@ -428,7 +479,7 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
 def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
     query = build_observed_query(payload)
-    latest_prices = build_latest_price_map(db)
+    latest_prices = build_latest_price_map(db, requested_cep)
     matches = find_matching_canonicals(db, query)
     results = [
         {
@@ -448,6 +499,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     warnings = []
     catalog_request = None
     search_job = None
+    operation_job = None
     tracked_item = None
     if payload.source_type == "box_photo":
         warnings.append("Entrada tratada como OCR de caixa; revise lote, validade e textos promocionais ignorados.")
@@ -456,6 +508,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
         tracked_item = register_tracked_item(db, query, requested_cep, "search_observed_item", source_kind=payload.source_type, match_confidence=0.0)
         catalog_request = register_catalog_request(db, query, requested_cep, "search_observed_item")
         search_job = register_search_job(db, query, requested_cep, "search_observed_item", catalog_request)
+        operation_job = _enqueue_search_job_processing(db, search_job=search_job, requested_by="tool_search_observed_item")
         warnings.append("Item observado registrado para enriquecimento futuro do catalogo.")
         warnings.append("Busca sob demanda adicionada a fila de processamento.")
     elif results[0]["score"] < 50:
@@ -473,13 +526,21 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     return tool_response(
         "search_observed_item",
         payload.model_dump(),
-        {"normalized_query": query, "results": results, "catalog_request": catalog_request_payload(catalog_request), "search_job": search_job_payload(search_job, db), "tracked_item": tracked_item_payload(tracked_item)},
+        {
+            "normalized_query": query,
+            "results": results,
+            "catalog_request": catalog_request_payload(catalog_request),
+            "search_job": search_job_payload(search_job, db),
+            "operation_job": operation_job,
+            "tracked_item": tracked_item_payload(tracked_item),
+        },
         confidence,
         warnings,
     )
 
 
-def compare_canonical_product_service(canonical_product_id: int, db: Session):
+def compare_canonical_product_service(canonical_product_id: int, cep: str, db: Session):
+    requested_cep = validate_cep_context(cep)
     canonical_product = (
         db.query(CanonicalProduct)
         .options(
@@ -492,19 +553,21 @@ def compare_canonical_product_service(canonical_product_id: int, db: Session):
     )
     if not canonical_product:
         raise ValueError("Produto canonico nao encontrado")
-    latest_prices = build_latest_price_map(db)
+    latest_prices = build_latest_price_map(db, requested_cep)
     offers = canonical_offer_payload(canonical_product, latest_prices)
     return {
         "canonical_product_id": canonical_product.id,
         "canonical_name": canonical_product.canonical_name,
         "ean_gtin": canonical_product.ean_gtin,
         "anvisa_code": canonical_product.anvisa_code,
+        "cep": requested_cep,
         "offers": offers,
     }
 
 
-def list_review_matches_service(db: Session):
-    products = (
+def list_review_matches_service(db: Session, *, cep: str | None = None, limit: int = 100, offset: int = 0):
+    normalized_cep = validate_cep_context(cep) if cep else None
+    query = (
         db.query(SourceProduct)
         .options(
             joinedload(SourceProduct.pharmacy),
@@ -512,8 +575,13 @@ def list_review_matches_service(db: Session):
         )
         .join(ProductMatch, ProductMatch.source_product_id == SourceProduct.id)
         .filter(ProductMatch.review_status == "needs_review")
-        .all()
     )
+    if normalized_cep:
+        source_product_ids = list(build_latest_price_map(db, normalized_cep).keys())
+        if not source_product_ids:
+            return []
+        query = query.filter(SourceProduct.id.in_(source_product_ids))
+    products = query.order_by(ProductMatch.confidence.asc(), SourceProduct.id.desc()).offset(offset).limit(limit).all()
     return [
         {
             "source_product_id": product.id,
@@ -521,6 +589,7 @@ def list_review_matches_service(db: Session):
             "raw_name": product.raw_name,
             "ean_gtin": product.ean_gtin,
             "anvisa_code": product.anvisa_code,
+            "requested_cep": normalized_cep,
             "canonical_product_id": product.match.canonical_product_id,
             "canonical_name": product.match.canonical_product.canonical_name if product.match and product.match.canonical_product else None,
             "match_type": product.match.match_type,

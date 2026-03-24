@@ -10,21 +10,37 @@ router = APIRouter()
 
 
 @router.get("/catalog/requests")
-def list_catalog_requests(db: Session = Depends(get_db)):
-    requests = db.query(CatalogRequest).order_by(CatalogRequest.last_requested_at.desc()).all()
+def list_catalog_requests(
+    cep: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(CatalogRequest).order_by(CatalogRequest.last_requested_at.desc())
+    if cep:
+        query = query.filter(CatalogRequest.cep == normalize_cep(cep))
+    requests = query.offset(offset).limit(limit).all()
     return [catalog_request_payload(request) for request in requests]
 
 
 @router.get("/search-jobs")
-def list_search_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(SearchJob).order_by(SearchJob.created_at.desc(), SearchJob.id.desc()).all()
+def list_search_jobs(
+    cep: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(SearchJob).order_by(SearchJob.created_at.desc(), SearchJob.id.desc())
+    if cep:
+        query = query.filter(SearchJob.cep == normalize_cep(cep))
+    jobs = query.offset(offset).limit(limit).all()
     return [search_job_payload(job, db) for job in jobs]
 
 
 @router.get("/search-jobs/{job_id}")
-def get_search_job(job_id: int, db: Session = Depends(get_db)):
+def get_search_job(job_id: int, cep: str | None = Query(None), db: Session = Depends(get_db)):
     job = db.query(SearchJob).filter(SearchJob.id == job_id).first()
-    if not job:
+    if not job or (cep and job.cep != normalize_cep(cep)):
         raise HTTPException(status_code=404, detail="Search job nao encontrado")
     return search_job_payload(job, db)
 
@@ -34,6 +50,8 @@ def list_tracked_items(
     cep: str | None = Query(None),
     status: str | None = Query(None),
     include_inactive: bool = Query(False),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     query = db.query(TrackedItemByCep).order_by(
@@ -47,5 +65,5 @@ def list_tracked_items(
     elif not include_inactive:
         query = query.filter(TrackedItemByCep.status != "inactive")
 
-    items = query.all()
+    items = query.offset(offset).limit(limit).all()
     return [tracked_item_payload(item) for item in items]
