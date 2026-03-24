@@ -151,6 +151,7 @@ class _FakeSession:
         self.tracked_items = []
         self.commits = 0
         self.closed = False
+        self.flush_validator = None
 
     def query(self, model):
         if model is CanonicalProduct:
@@ -217,6 +218,8 @@ class _FakeSession:
             self.price_snapshots.append(instance)
 
     def flush(self):
+        if self.flush_validator:
+            self.flush_validator(self)
         return None
 
     def commit(self):
@@ -695,6 +698,78 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(len(session.price_snapshots), 1)
         self.assertEqual(session.scrape_runs[0].products_seen, 2)
         self.assertEqual(session.scrape_runs[0].products_saved, 1)
+
+    def test_base_scraper_save_products_to_db_derives_raw_name_from_alternate_fields(self):
+        class _PersistScraper(BaseScraper):
+            pharmacy_slug = "farmacia-teste"
+
+            def __init__(self):
+                super().__init__("https://example.com")
+                self.search_terms = ["dipirona"]
+
+        session = _FakeSession([])
+        session.pharmacies = [Pharmacy(id=1, name="Farmacia Teste", slug="farmacia-teste")]
+        original_session_local = scraper_base_module.SessionLocal
+        try:
+            scraper_base_module.SessionLocal = lambda: session
+            scraper = _PersistScraper()
+            scraper.save_products_to_db(
+                [
+                    {
+                        "sku": "sku-3",
+                        "title": "Dipirona 1g 10 Comprimidos",
+                        "link": "https://example.com/p/3",
+                        "price": 9.9,
+                        "availability": "available",
+                    }
+                ]
+            )
+        finally:
+            scraper_base_module.SessionLocal = original_session_local
+
+        self.assertEqual(len(session.source_products), 1)
+        self.assertEqual(session.source_products[0].raw_name, "Dipirona 1g 10 Comprimidos")
+        self.assertEqual(session.source_products[0].normalized_name, "dipirona 1g 10 comprimidos")
+        self.assertEqual(session.source_products[0].source_sku, "sku-3")
+        self.assertEqual(len(session.price_snapshots), 1)
+
+    def test_base_scraper_flushes_only_after_populating_required_source_product_fields(self):
+        class _PersistScraper(BaseScraper):
+            pharmacy_slug = "farmacia-teste"
+
+            def __init__(self):
+                super().__init__("https://example.com")
+                self.search_terms = ["buscopan"]
+
+        session = _FakeSession([])
+        session.pharmacies = [Pharmacy(id=1, name="Farmacia Teste", slug="farmacia-teste")]
+
+        def _assert_source_products_ready_before_flush(active_session):
+            for source_product in active_session.source_products:
+                self.assertTrue(source_product.source_sku)
+                self.assertTrue(source_product.raw_name)
+                self.assertTrue(source_product.normalized_name)
+
+        session.flush_validator = _assert_source_products_ready_before_flush
+        original_session_local = scraper_base_module.SessionLocal
+        try:
+            scraper_base_module.SessionLocal = lambda: session
+            scraper = _PersistScraper()
+            scraper.save_products_to_db(
+                [
+                    {
+                        "sku": "sku-4",
+                        "title": "Buscopan 10mg 20 Drageas",
+                        "link": "https://example.com/p/4",
+                        "price": 14.9,
+                    }
+                ]
+            )
+        finally:
+            scraper_base_module.SessionLocal = original_session_local
+
+        self.assertEqual(len(session.source_products), 1)
+        self.assertEqual(session.source_products[0].raw_name, "Buscopan 10mg 20 Drageas")
 
     def test_list_source_products_applies_limit_and_offset(self):
         session = _FakeSession([])

@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import logging
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func
@@ -15,6 +16,7 @@ from src.api.deps import get_db
 from src.api.ops_routes import router as ops_router
 from src.core.config import settings
 from src.core.logging import configure_logging
+from src.core.logging import get_logger, log_event
 from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     build_latest_price_map,
@@ -45,6 +47,7 @@ configure_logging()
 app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 app.include_router(catalog_router)
 app.include_router(ops_router)
+LOGGER = get_logger(__name__)
 
 
 def _validated_optional_cep(cep):
@@ -304,7 +307,20 @@ def tool_search_products(
     cep: str = Query(..., min_length=8),
     db: Session = Depends(get_db),
 ):
-    return search_products_service(query, cep, db)
+    try:
+        return search_products_service(query, cep, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            logging.ERROR,
+            "tool_search_products_failed",
+            query=query,
+            cep=cep,
+            error_message=str(exc)[:500],
+        )
+        raise HTTPException(status_code=500, detail="Internal Server Error") from exc
 
 
 @app.post("/tool/compare-shopping-list")

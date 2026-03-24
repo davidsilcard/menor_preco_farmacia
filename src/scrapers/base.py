@@ -251,6 +251,34 @@ class BaseScraper:
     def _missing_required_product_fields(product_data: dict, required_fields: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(field for field in required_fields if not product_data.get(field))
 
+    @classmethod
+    def _normalized_product_data(cls, product_data: dict) -> dict:
+        normalized = dict(product_data or {})
+
+        raw_name = (
+            normalized.get("raw_name")
+            or normalized.get("name")
+            or normalized.get("title")
+            or normalized.get("product_name")
+            or normalized.get("productName")
+            or normalized.get("productTitle")
+        )
+        if raw_name:
+            normalized["raw_name"] = str(raw_name).strip()
+
+        if not normalized.get("normalized_name") and normalized.get("raw_name"):
+            normalized["normalized_name"] = cls.normalize_text(normalized["raw_name"])
+
+        source_url = normalized.get("source_url") or normalized.get("url") or normalized.get("link") or normalized.get("product_url")
+        if source_url:
+            normalized["source_url"] = source_url
+
+        source_sku = normalized.get("source_sku") or normalized.get("sku") or normalized.get("itemId") or normalized.get("productId")
+        if source_sku is not None:
+            normalized["source_sku"] = str(source_sku)
+
+        return normalized
+
     def _upsert_source_product(self, session, pharmacy_id: int, product_data: dict) -> SourceProduct:
         source_product = (
             session.query(SourceProduct)
@@ -264,10 +292,12 @@ class BaseScraper:
                 source_sku=product_data["source_sku"],
             )
             session.add(source_product)
-            session.flush()
 
         for field_name in self.SOURCE_PRODUCT_FIELDS:
             setattr(source_product, field_name, product_data.get(field_name))
+
+        if not getattr(source_product, "id", None):
+            session.flush()
 
         return source_product
 
@@ -330,9 +360,16 @@ class BaseScraper:
             scrape_run = self.start_scrape_run(session, pharmacy, getattr(self, "search_terms", []))
 
             for product_data in products:
+                product_data = self._normalized_product_data(product_data)
                 missing_fields = self._missing_required_product_fields(product_data, required_fields)
-                if missing_fields:
+                core_missing_fields = self._missing_required_product_fields(product_data, ("source_sku", "raw_name", "normalized_name"))
+                if missing_fields or core_missing_fields:
                     skipped_products += 1
+                    self.log_warning(
+                        "scraper_product_skipped_missing_fields",
+                        source_sku=product_data.get("source_sku"),
+                        missing_fields=list(dict.fromkeys(core_missing_fields + missing_fields)),
+                    )
                     continue
 
                 source_product = self._upsert_source_product(session, pharmacy.id, product_data)
