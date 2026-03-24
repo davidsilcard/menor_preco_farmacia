@@ -1,44 +1,74 @@
-from pydantic_settings import BaseSettings
 import os
-from dotenv import load_dotenv
 
-# Carrega o .env da raiz
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
+
 load_dotenv()
 
+DEFAULT_DB_HOST = "192.168.25.203"
+DEFAULT_DB_PORT = "5432"
+DEFAULT_DB_NAME = "precos-farmacia"
+DEFAULT_DB_USER = "admin"
+DEFAULT_DB_PASSWORD = "password"
+DEFAULT_PORT = 8001
+DEFAULT_CEP = "89254300"
+DEFAULT_SEARCH_TERMS = "dipirona,paracetamol,ibuprofeno"
+DEFAULT_SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP = 50
+DEFAULT_SCHEDULED_COLLECTION_SLOTS = "08:00,15:00"
+DEFAULT_SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES = 120
+DEFAULT_PRICE_RETENTION_DAYS = 90
+
+
+def _env_str(name: str, default: str) -> str:
+    return os.getenv(name, default)
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    default_value = "true" if default else "false"
+    return os.getenv(name, default_value).lower() == "true"
+
+
 class Settings(BaseSettings):
-    # Definindo os campos com base no seu .env real
-    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "admin")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "password")
-    DB_HOST: str = os.getenv("DB_HOST", "192.168.25.203")
-    DB_PORT: str = os.getenv("DB_PORT", "5432")
-    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "precos-farmacia")
-    PORT: int = int(os.getenv("PORT", "8001"))
-    
-    CEP: str = os.getenv("CEP", "89254300")
-    PANVEL_SEARCH_TERMS: str = os.getenv("PANVEL_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    FARMASESI_SEARCH_TERMS: str = os.getenv("FARMASESI_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    SAO_JOAO_SEARCH_TERMS: str = os.getenv("SAO_JOAO_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    FARMACIA_JARAGUA_SEARCH_TERMS: str = os.getenv("FARMACIA_JARAGUA_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    DROGASIL_SEARCH_TERMS: str = os.getenv("DROGASIL_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    CATARINENSE_SEARCH_TERMS: str = os.getenv("CATARINENSE_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    PRECO_POPULAR_SEARCH_TERMS: str = os.getenv("PRECO_POPULAR_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    DROGA_RAIA_SEARCH_TERMS: str = os.getenv("DROGA_RAIA_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno")
-    DROGARIA_SAO_PAULO_SEARCH_TERMS: str = os.getenv(
-        "DROGARIA_SAO_PAULO_SEARCH_TERMS", "dipirona,paracetamol,ibuprofeno"
+    POSTGRES_USER: str = _env_str("POSTGRES_USER", DEFAULT_DB_USER)
+    POSTGRES_PASSWORD: str = _env_str("POSTGRES_PASSWORD", DEFAULT_DB_PASSWORD)
+    DB_HOST: str = _env_str("DB_HOST", DEFAULT_DB_HOST)
+    DB_PORT: str = _env_str("DB_PORT", DEFAULT_DB_PORT)
+    POSTGRES_DB: str = _env_str("POSTGRES_DB", DEFAULT_DB_NAME)
+    PORT: int = _env_int("PORT", DEFAULT_PORT)
+
+    CEP: str = _env_str("CEP", DEFAULT_CEP)
+
+    PANVEL_SEARCH_TERMS: str = _env_str("PANVEL_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    FARMASESI_SEARCH_TERMS: str = _env_str("FARMASESI_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    SAO_JOAO_SEARCH_TERMS: str = _env_str("SAO_JOAO_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    FARMACIA_JARAGUA_SEARCH_TERMS: str = _env_str("FARMACIA_JARAGUA_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    DROGASIL_SEARCH_TERMS: str = _env_str("DROGASIL_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    CATARINENSE_SEARCH_TERMS: str = _env_str("CATARINENSE_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    PRECO_POPULAR_SEARCH_TERMS: str = _env_str("PRECO_POPULAR_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    DROGA_RAIA_SEARCH_TERMS: str = _env_str("DROGA_RAIA_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+    DROGARIA_SAO_PAULO_SEARCH_TERMS: str = _env_str("DROGARIA_SAO_PAULO_SEARCH_TERMS", DEFAULT_SEARCH_TERMS)
+
+    ON_DEMAND_ENABLE_BROWSER_SCRAPERS: bool = _env_bool("ON_DEMAND_ENABLE_BROWSER_SCRAPERS")
+    SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS: bool = _env_bool("SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS")
+    SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP: int = _env_int(
+        "SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP",
+        DEFAULT_SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP,
     )
-    ON_DEMAND_ENABLE_BROWSER_SCRAPERS: bool = os.getenv("ON_DEMAND_ENABLE_BROWSER_SCRAPERS", "false").lower() == "true"
-    SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS: bool = os.getenv(
-        "SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS", "false"
-    ).lower() == "true"
-    SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP: int = int(os.getenv("SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP", "50"))
-    SCHEDULED_COLLECTION_SLOTS: str = os.getenv("SCHEDULED_COLLECTION_SLOTS", "08:00,15:00")
-    SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES: int = int(os.getenv("SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES", "120"))
-    PRICE_RETENTION_DAYS: int = int(os.getenv("PRICE_RETENTION_DAYS", "90"))
-    MCP_EXPOSE_ADMIN_TOOLS: bool = os.getenv("MCP_EXPOSE_ADMIN_TOOLS", "false").lower() == "true"
+    SCHEDULED_COLLECTION_SLOTS: str = _env_str("SCHEDULED_COLLECTION_SLOTS", DEFAULT_SCHEDULED_COLLECTION_SLOTS)
+    SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES: int = _env_int(
+        "SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES",
+        DEFAULT_SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES,
+    )
+    PRICE_RETENTION_DAYS: int = _env_int("PRICE_RETENTION_DAYS", DEFAULT_PRICE_RETENTION_DAYS)
+    MCP_EXPOSE_ADMIN_TOOLS: bool = _env_bool("MCP_EXPOSE_ADMIN_TOOLS")
 
     @property
     def DATABASE_URL(self) -> str:
-        # Monta a URL dinamicamente
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.POSTGRES_DB}"
+
 
 settings = Settings()
