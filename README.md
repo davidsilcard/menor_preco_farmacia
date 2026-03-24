@@ -43,6 +43,36 @@ Ela deve:
 - associar produtos equivalentes entre farmacias
 - expor consultas objetivas para comparacao
 
+## MCP: atendimento vs operacao
+
+O MCP deste projeto deve priorizar ferramentas de atendimento.
+
+Por padrao, a LLM de atendimento deve enxergar apenas tools orientadas a responder o cliente, como:
+
+- `search_products`
+- `compare_shopping_list`
+- `compare_basket`
+- `compare_invoice_items`
+- `compare_receipt`
+- `search_observed_item`
+- `compare_canonical_product`
+- `get_search_job`
+
+Tools administrativas nao devem ser expostas por default no MCP.
+
+Exemplos de tools administrativas:
+
+- `list_review_matches`
+- `list_search_jobs`
+
+Essas tools so devem ser expostas quando houver necessidade operacional explicita e a configuracao `MCP_EXPOSE_ADMIN_TOOLS=true`.
+
+Regra pratica:
+
+- MCP de atendimento: tools minimas, seguras e orientadas a resposta final da LLM
+- API HTTP operacional: endpoints de monitoramento, fila, health e revisao
+- MCP administrativo: opcional, controlado por flag
+
 ## Arquitetura
 
 O modelo de dados foi desenhado para evitar comparacao por texto puro.
@@ -256,6 +286,25 @@ POST /tool/search-observed-item
 ```
 
 O endpoint tenta ignorar ruido comum de embalagem, como lote e validade.
+
+## Escopo por CEP
+
+Preco, disponibilidade, fila e tracking devem sempre respeitar `cep`.
+
+Regras atuais:
+
+- consultas de tool exigem `cep`
+- comparacoes de oferta exigem `cep`
+- snapshots e melhores ofertas sao filtrados por `cep`
+- jobs, tracking e rotina agendada sao controlados por `cep`
+- retencao operacional e de precos e de `90 dias`
+
+Em endpoints/listagens administrativas, o comportamento esperado e:
+
+- sem `cep`: visao global de backoffice, quando fizer sentido operacional
+- com `cep`: visao estritamente filtrada para aquele contexto
+
+Para MCP de atendimento, o uso esperado e sempre com `cep`.
 
 ## Exemplo de resposta util para LLM
 

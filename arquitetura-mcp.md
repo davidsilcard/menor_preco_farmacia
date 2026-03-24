@@ -8,6 +8,38 @@ O usuario final conversa com uma aplicacao que usa uma LLM.
 
 A LLM usa esta API como ferramenta para responder perguntas sobre economia em farmacias, equivalencia de produtos e comparacao de precos.
 
+## Perfis de MCP
+
+Este projeto passa a ter uma separacao explicita entre MCP de atendimento e operacao interna.
+
+### MCP de atendimento
+
+Deve expor apenas tools necessarias para responder o cliente final.
+
+Exemplos:
+
+- `search_products`
+- `compare_shopping_list`
+- `compare_basket`
+- `compare_invoice_items`
+- `compare_receipt`
+- `search_observed_item`
+- `compare_canonical_product`
+- `get_search_job`
+
+### MCP administrativo
+
+Nao deve ser o default.
+So pode ser exposto quando houver necessidade operacional explicita.
+
+Exemplos:
+
+- `list_review_matches`
+- `list_search_jobs`
+
+Essa exposicao deve ficar atras de configuracao.
+No codigo atual, a flag e `MCP_EXPOSE_ADMIN_TOOLS`.
+
 ## Camadas
 
 ### Camada 1: interface do cliente
@@ -106,6 +138,22 @@ Por isso a arquitetura passa a usar um item monitorado por `CEP`, com:
 - ciclo de vida `active/cooldown/inactive`
 
 Isso permite que a rotina das `08:00` e `15:00` busque apenas os itens relevantes para cada `CEP`.
+
+## Regra de isolamento por CEP
+
+Toda a arquitetura operacional deve assumir `cep` como chave de contexto.
+
+Isso significa:
+
+- leitura de oferta filtrada por `cep`
+- snapshot filtrado por `cep`
+- fila filtrada por `cep`
+- tracking filtrado por `cep`
+- health operacional filtravel por `cep`
+- retencao aplicada aos dados operacionais por janela maxima de `90 dias`
+
+Uma LLM nao pode receber como verdade operacional dados de outro `cep`.
+Se o contexto atual e `89254300`, nenhuma leitura de preco, fila ou item rastreado de outro `cep` deve contaminar a resposta.
 
 ## Ciclo operacional
 
