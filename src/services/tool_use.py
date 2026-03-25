@@ -602,12 +602,16 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     requires_polling = bool(ref_lists["search_job_ids"])
     item_results = [item for item in comparisons if item.get("match_found")]
     item_resolution_counts = resolution_source_summary(comparisons)
+    grouped_payload = grouped_results(item_results)
+    next_action, next_action_reason = next_action_for_results(item_results, requires_polling=requires_polling)
 
     return tool_response(
         "compare_shopping_list",
         payload.model_dump(),
         {
             **build_basket_result(comparisons),
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
             "outcome": outcome_for_results(item_results, requires_polling=requires_polling),
             "evidence_level": evidence_level(
                 "source_product_fallback" if item_resolution_counts.get("source_product_fallback") else "canonical_match" if item_results else None,
@@ -619,6 +623,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
             "results_with_offers_count": results_with_offers_count(item_results),
             "unique_pharmacies_count": len(unique_pharmacies(item_results)),
             "unique_pharmacies": unique_pharmacies(item_results),
+            "groups": grouped_payload,
             "resolution_source_summary": item_resolution_counts,
             **ref_lists,
             "catalog_requests": catalog_requests,
@@ -721,12 +726,16 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     requires_polling = bool(ref_lists["search_job_ids"])
     item_results = [item for item in comparisons if item.get("match_found")]
     item_resolution_counts = resolution_source_summary(comparisons)
+    grouped_payload = grouped_results(item_results)
+    next_action, next_action_reason = next_action_for_results(item_results, requires_polling=requires_polling)
 
     return tool_response(
         "compare_invoice_items",
         payload.model_dump(),
         {
             "items": comparisons,
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
             "outcome": outcome_for_results(item_results, requires_polling=requires_polling),
             "evidence_level": evidence_level(
                 "source_product_fallback" if item_resolution_counts.get("source_product_fallback") else "canonical_match" if item_results else None,
@@ -738,6 +747,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
             "results_with_offers_count": results_with_offers_count(item_results),
             "unique_pharmacies_count": len(unique_pharmacies(item_results)),
             "unique_pharmacies": unique_pharmacies(item_results),
+            "groups": grouped_payload,
             "resolution_source_summary": item_resolution_counts,
             **ref_lists,
             "total_potential_savings": total_potential_savings,
@@ -768,6 +778,8 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "captured_at": payload.captured_at,
             **build_basket_result(items),
             "summary": summary,
+            "next_action": result_payload.get("next_action"),
+            "next_action_reason": result_payload.get("next_action_reason"),
             "outcome": result_payload.get("outcome"),
             "evidence_level": result_payload.get("evidence_level"),
             "requires_polling": result_payload.get("requires_polling"),
@@ -776,6 +788,7 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "results_with_offers_count": result_payload.get("results_with_offers_count"),
             "unique_pharmacies_count": result_payload.get("unique_pharmacies_count"),
             "unique_pharmacies": result_payload.get("unique_pharmacies", []),
+            "groups": result_payload.get("groups", []),
             "resolution_source_summary": result_payload.get("resolution_source_summary", resolution_source_summary(items)),
             "catalog_request_ids": result_payload.get("catalog_request_ids", []),
             "search_job_ids": result_payload.get("search_job_ids", []),
@@ -846,6 +859,8 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     tracked_item_result = tracked_item_payload(tracked_item)
     requires_polling = search_job_result is not None
     result_resolution_source = resolution_source or "queued_enrichment"
+    grouped_payload = grouped_results(results)
+    next_action, next_action_reason = next_action_for_results(results, requires_polling=requires_polling)
     result_refs = flattened_tool_refs(
         catalog_request=catalog_request_result,
         search_job=search_job_result,
@@ -857,6 +872,8 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
         payload.model_dump(),
         {
             "normalized_query": query,
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
             "resolution_source": result_resolution_source,
             "outcome": outcome_for_results(results, requires_polling=requires_polling),
             "evidence_level": evidence_level(result_resolution_source, results),
@@ -866,6 +883,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
             "results_with_offers_count": results_with_offers_count(results),
             "unique_pharmacies_count": len(unique_pharmacies(results)),
             "unique_pharmacies": unique_pharmacies(results),
+            "groups": grouped_payload,
             **result_refs,
             "results": results,
             "catalog_request": catalog_request_result,

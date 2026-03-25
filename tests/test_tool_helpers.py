@@ -72,6 +72,7 @@ from src.services.scheduled_collection import (
 )
 from src.services.matching import ProductMatcher
 from src.services.tool_models import ObservedItemRequest
+from src.services.tool_models import InvoiceComparisonRequest
 from src.services.tool_models import ShoppingListRequest
 from src.services.tool_use import (
     availability_warnings as _availability_warnings,
@@ -81,6 +82,7 @@ from src.services.tool_use import (
     build_observed_query as _build_observed_query,
     build_price_summary as _build_price_summary,
     compare_canonical_product_service as _compare_canonical_product_service,
+    compare_invoice_items_service as _compare_invoice_items_service,
     compare_shopping_list_service as _compare_shopping_list_service,
     estimate_overall_confidence as _estimate_overall_confidence,
     item_availability_summary as _item_availability_summary,
@@ -1865,11 +1867,13 @@ class ToolHelperTests(unittest.TestCase):
 
         self.assertEqual(response["result"]["items"][0]["resolution_source"], "canonical_match")
         self.assertEqual(response["result"]["items"][1]["resolution_source"], "queued_enrichment")
+        self.assertEqual(response["result"]["next_action"], "poll_search_job")
         self.assertEqual(response["result"]["outcome"], "partial")
         self.assertEqual(response["result"]["evidence_level"], "canonical_only")
         self.assertTrue(response["result"]["requires_polling"])
         self.assertEqual(response["result"]["results_count"], 1)
         self.assertEqual(response["result"]["offers_count"], 0)
+        self.assertEqual(response["result"]["groups"][0]["group_label"], "Jardiance 25mg")
         self.assertEqual(len(response["result"]["search_job_ids"]), 1)
         self.assertEqual(
             response["result"]["resolution_source_summary"],
@@ -1938,7 +1942,43 @@ class ToolHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(response["result"]["resolution_source"], "canonical_match")
+        self.assertEqual(response["result"]["next_action"], "respond_now")
+        self.assertEqual(response["result"]["groups"][0]["group_label"], "Clonazepam Gotas 20ml")
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
+
+    def test_search_observed_item_service_enqueued_result_exposes_polling_action(self):
+        session = _FakeSession([])
+
+        response = _search_observed_item_service(
+            ObservedItemRequest(cep="89254300", observations=["produto raro xyz"], source_type="free_text"),
+            session,
+        )
+
+        self.assertEqual(response["result"]["resolution_source"], "queued_enrichment")
+        self.assertEqual(response["result"]["next_action"], "poll_search_job")
+        self.assertEqual(response["result"]["groups"], [])
+        self.assertTrue(response["result"]["requires_polling"])
+
+    def test_compare_invoice_items_service_exposes_next_action_and_groups(self):
+        session = _FakeSession([])
+        canonical = CanonicalProduct(id=10, canonical_name="Jardiance 25mg", normalized_name="jardiance 25mg")
+        session.canonicals = [canonical]
+
+        response = _compare_invoice_items_service(
+            InvoiceComparisonRequest(
+                cep="89254300",
+                items=[
+                    {"description": "jardiance 25mg", "paid_price": 100.0, "quantity": 1},
+                    {"description": "produto raro xyz", "paid_price": 10.0, "quantity": 1},
+                ],
+            ),
+            session,
+        )
+
+        self.assertEqual(response["result"]["next_action"], "poll_search_job")
+        self.assertEqual(response["result"]["outcome"], "partial")
+        self.assertEqual(response["result"]["groups"][0]["group_label"], "Jardiance 25mg")
+        self.assertEqual(len(response["result"]["search_job_ids"]), 1)
 
     def test_compare_canonical_product_service_filters_offers_by_cep(self):
         session = _FakeSession([])
