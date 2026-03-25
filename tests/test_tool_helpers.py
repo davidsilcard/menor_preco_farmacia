@@ -1574,6 +1574,8 @@ class ToolHelperTests(unittest.TestCase):
 
         response = _search_products_service("produto raro xyz", "89254300", session)
 
+        self.assertEqual(response["result"]["recommended_match_mode"], "broad")
+        self.assertEqual(response["result"]["next_action"], "poll_search_job")
         self.assertEqual(response["result"]["resolution_source"], "queued_enrichment")
         self.assertEqual(response["result"]["outcome"], "queued")
         self.assertEqual(response["result"]["evidence_level"], "none")
@@ -1601,6 +1603,8 @@ class ToolHelperTests(unittest.TestCase):
 
         response = _search_products_service("jardiance 25mg", "89254300", session)
 
+        self.assertEqual(response["result"]["recommended_match_mode"], "strict")
+        self.assertEqual(response["result"]["next_action"], "respond_now")
         self.assertEqual(response["result"]["resolution_source"], "canonical_match")
         self.assertEqual(response["result"]["outcome"], "resolved")
         self.assertEqual(response["result"]["evidence_level"], "canonical_only")
@@ -1608,6 +1612,8 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
         self.assertEqual(response["result"]["results"][0]["display_name"], "Jardiance 25mg - comprimido - 30 comprimidos")
         self.assertEqual(response["result"]["results"][0]["presentation_group"], "25mg | comprimido | 30 comprimidos")
+        self.assertEqual(response["result"]["groups"][0]["group_label"], "25mg | comprimido | 30 comprimidos")
+        self.assertEqual(response["result"]["groups"][0]["results_count"], 1)
 
     def test_search_products_service_reuses_source_product_fallback_before_queueing(self):
         canonical = CanonicalProduct(
@@ -1741,11 +1747,15 @@ class ToolHelperTests(unittest.TestCase):
 
         response = _search_products_service("amoxicilina", "89254300", session)
 
+        self.assertEqual(response["result"]["recommended_match_mode"], "broad")
+        self.assertEqual(response["result"]["next_action"], "respond_now")
         self.assertEqual(response["result"]["results_count"], 2)
         self.assertEqual(response["result"]["offers_count"], 2)
         self.assertEqual(response["result"]["results_with_offers_count"], 2)
         self.assertEqual(response["result"]["unique_pharmacies_count"], 1)
         self.assertEqual(response["result"]["unique_pharmacies"], ["FarmaSesi"])
+        self.assertEqual(len(response["result"]["groups"]), 2)
+        self.assertEqual({group["group_label"] for group in response["result"]["groups"]}, {"Amoxicilina A", "Amoxicilina B"})
 
     def test_search_products_service_strict_mode_filters_other_strengths_but_keeps_xr_same_strength(self):
         pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
@@ -1825,12 +1835,17 @@ class ToolHelperTests(unittest.TestCase):
         response = _search_products_service("glifage 500mg", "89254300", session, match_mode="strict")
 
         self.assertEqual(response["result"]["match_mode"], "strict")
+        self.assertEqual(response["result"]["recommended_match_mode"], "strict")
+        self.assertEqual(response["result"]["next_action"], "respond_now")
         self.assertEqual(response["result"]["results_count"], 2)
         self.assertEqual(
             [item["canonical_name"] for item in response["result"]["results"]],
             ["Glifage 500mg 30 Comprimidos", "Glifage XR 500mg 30 Comprimidos"],
         )
         self.assertEqual(response["warnings"], [])
+        self.assertEqual(len(response["result"]["groups"]), 1)
+        self.assertEqual(response["result"]["groups"][0]["group_label"], "500mg | comprimido | 30 comprimidos")
+        self.assertEqual(response["result"]["groups"][0]["results_count"], 2)
 
     def test_search_products_service_rejects_invalid_match_mode(self):
         session = _FakeSession([])

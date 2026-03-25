@@ -370,6 +370,18 @@ Esses endpoints sao os mais importantes para a LLM quando a pergunta do usuario 
 - `POST /tool/compare-receipt`
 - `POST /tool/search-observed-item`
 
+Campos auxiliares para agente em `search-products`:
+
+- `recommended_match_mode`
+- `next_action`
+- `next_action_reason`
+- `groups`
+
+Uso recomendado:
+
+- nome base do remedio: `match_mode=broad`
+- nome com dosagem explicita: `match_mode=strict`
+
 ### Operacao e coleta
 
 - `GET /ops/schedule`

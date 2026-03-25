@@ -30,6 +30,10 @@ Campos importantes:
 - `result.resolution_source`
 - `result.results`
 - `result.match_mode`
+- `result.recommended_match_mode`
+- `result.next_action`
+- `result.next_action_reason`
+- `result.groups`
 - `result.catalog_request`
 - `result.search_job`
 - `result.operation_job`
@@ -109,6 +113,17 @@ Cada item pode ter:
 - `data_freshness`
 - `availability_summary`
 
+`result.groups` ja devolve os resultados agrupados por apresentacao.
+
+Cada grupo pode trazer:
+
+- `group_label`
+- `results_count`
+- `offers_count`
+- `unique_pharmacies`
+- `best_offer`
+- `items`
+
 ## Quando usar `match_mode`
 
 `search_products` aceita:
@@ -131,6 +146,33 @@ Regra operacional:
   - variacoes como `XR` podem continuar, desde que a dosagem bata
 
 `strict` nao deve ser usado para esconder variacoes quando o usuario pediu apenas o nome base do remedio.
+
+## Como usar `recommended_match_mode`
+
+O backend tambem expõe `result.recommended_match_mode`.
+
+Regra:
+
+- se vier `broad`, a LLM pode manter busca ampla
+- se vier `strict` e o usuario pediu dosagem explicita, a LLM deve preferir `strict`
+
+Esse campo existe para reduzir erro de decisao da LLM.
+
+## Como usar `next_action`
+
+O backend expõe:
+
+- `result.next_action`
+- `result.next_action_reason`
+
+Valores esperados:
+
+- `respond_now`
+  - ja ha resultado suficiente para responder
+- `poll_search_job`
+  - a busca foi enfileirada e a LLM deve consultar `get_search_job`
+- `ask_user_to_refine`
+  - faltam detalhes suficientes para resposta util imediata
 
 Se `results` vier vazio:
 

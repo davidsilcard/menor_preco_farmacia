@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from src.models.base import CanonicalProduct, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
+    availability_rank,
     best_pricing_offer,
     build_latest_price_map,
     build_cmed_reference_map,
@@ -107,6 +108,65 @@ def canonical_presentation_group(canonical_product: CanonicalProduct):
     if parts:
         return " | ".join(parts)
     return canonical_product.canonical_name
+
+
+def recommended_match_mode(query: str):
+    return "strict" if requested_strength_tokens(query) else "broad"
+
+
+def next_action_for_results(results: list[dict], *, requires_polling: bool):
+    if requires_polling:
+        return "poll_search_job", "A busca foi enfileirada e ainda depende do resultado do search_job."
+    if results:
+        return "respond_now", "Ja existem resultados estruturados suficientes para responder ao usuario."
+    return "ask_user_to_refine", "Nao ha resultado util imediato; vale pedir mais detalhes da apresentacao ou dosagem."
+
+
+def grouped_results(results: list[dict]):
+    grouped = {}
+    for result in results:
+        group_key = result.get("presentation_group") or result.get("display_name") or result.get("canonical_name")
+        group = grouped.setdefault(
+            group_key,
+            {
+                "group_label": group_key,
+                "items": [],
+                "results_count": 0,
+                "offers_count": 0,
+                "unique_pharmacies": set(),
+                "best_offer": None,
+            },
+        )
+        group["items"].append(result)
+        group["results_count"] += 1
+        group["offers_count"] += len(result.get("offers") or [])
+        for offer in result.get("offers") or []:
+            if offer.get("pharmacy"):
+                group["unique_pharmacies"].add(offer["pharmacy"])
+        candidate_best_offer = best_pricing_offer(result.get("offers") or [])
+        current_best_offer = group["best_offer"]
+        if candidate_best_offer and (
+            current_best_offer is None
+            or (candidate_best_offer["price"], availability_rank(candidate_best_offer.get("availability")))
+            < (current_best_offer["price"], availability_rank(current_best_offer.get("availability")))
+        ):
+            group["best_offer"] = candidate_best_offer
+
+    payload = []
+    for group in grouped.values():
+        payload.append(
+            {
+                "group_label": group["group_label"],
+                "results_count": group["results_count"],
+                "offers_count": group["offers_count"],
+                "unique_pharmacies_count": len(group["unique_pharmacies"]),
+                "unique_pharmacies": sorted(group["unique_pharmacies"]),
+                "best_offer": group["best_offer"],
+                "items": group["items"],
+            }
+        )
+    payload.sort(key=lambda item: item["group_label"])
+    return payload
 
 
 def evidence_level(resolution_source: str | None, results: list[dict]):
@@ -377,6 +437,7 @@ def availability_warnings(items: list[dict]):
 
 def search_products_service(query: str, cep: str, db: Session, *, match_mode: str = "broad"):
     normalized_match_mode = normalize_match_mode(match_mode)
+    recommended_mode = recommended_match_mode(query)
     requested_cep = validate_cep_context(cep)
     latest_prices = build_latest_price_map(db, requested_cep)
     cmed_reference_map = build_cmed_reference_map(db)
@@ -434,6 +495,8 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
     tracked_item_result = tracked_item_payload(tracked_item)
     requires_polling = search_job_result is not None
     result_resolution_source = resolution_source or "queued_enrichment"
+    grouped_payload = grouped_results(results)
+    next_action, next_action_reason = next_action_for_results(results, requires_polling=requires_polling)
     result_refs = flattened_tool_refs(
         catalog_request=catalog_request_result,
         search_job=search_job_result,
@@ -446,6 +509,9 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
         {"query": query, "cep": cep, "match_mode": normalized_match_mode},
         {
             "match_mode": normalized_match_mode,
+            "recommended_match_mode": recommended_mode,
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
             "resolution_source": result_resolution_source,
             "outcome": outcome_for_results(results, requires_polling=requires_polling),
             "evidence_level": evidence_level(result_resolution_source, results),
@@ -455,6 +521,7 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
             "results_with_offers_count": results_with_offers_count(results),
             "unique_pharmacies_count": len(unique_pharmacies(results)),
             "unique_pharmacies": unique_pharmacies(results),
+            "groups": grouped_payload,
             **result_refs,
             "results": results,
             "catalog_request": catalog_request_result,
