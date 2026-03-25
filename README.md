@@ -77,6 +77,7 @@ Manual operacional da LLM:
 
 - `LLM_OPERATOR_MANUAL.md`
 - `LLM_TOOL_EXAMPLES.md`
+- `LLM_CONFORMANCE_CHECKLIST.md`
 
 ## Semantica de resolucao para a LLM
 
