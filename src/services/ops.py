@@ -30,6 +30,7 @@ def _config_readiness_payload():
     return {
         "status": "ok" if not issues else "error",
         "active_cep": settings.CEP,
+        "configured_default_cep": settings.CEP,
         "issues": issues,
     }
 
@@ -242,6 +243,7 @@ def ops_health_payload(db, cep: str | None = None):
     return {
         "status": overall_status,
         "active_cep": settings.CEP,
+        "configured_default_cep": settings.CEP,
         "requested_cep": normalized_cep,
         "queue": queue,
         "operation_jobs": operation_queue,
@@ -335,6 +337,7 @@ def ops_metrics_payload(db, cep: str | None = None):
 
     return {
         "active_cep": settings.CEP,
+        "configured_default_cep": settings.CEP,
         "requested_cep": normalized_cep,
         "catalog": {
             "canonical_products": canonical_products_count,

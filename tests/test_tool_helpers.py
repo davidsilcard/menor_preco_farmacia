@@ -2038,6 +2038,7 @@ class ToolHelperTests(unittest.TestCase):
             ops_module.build_latest_price_map = original_builder
 
         self.assertEqual(payload["requested_cep"], "89254300")
+        self.assertEqual(payload["configured_default_cep"], "89254300")
         self.assertEqual(payload["catalog"]["source_products"], 1)
         self.assertEqual(payload["catalog_requests"]["total"], 1)
         self.assertEqual(payload["catalog_requests"]["resolution_source_counts"], {"pending": 1})
@@ -2057,6 +2058,7 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["checks"]["database"]["status"], "ok")
         self.assertEqual(payload["checks"]["config"]["status"], "ok")
+        self.assertEqual(payload["checks"]["config"]["configured_default_cep"], "89254300")
 
     def test_scraper_health_payload_marks_failed_latest_run_as_degraded(self):
         session = _FakeSession([])

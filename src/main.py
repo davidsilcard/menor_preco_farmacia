@@ -66,6 +66,7 @@ def read_root():
         "message": "Monitor de Precos de Farmacias Ativo",
         "regiao": "Jaragua do Sul - SC",
         "active_cep": settings.CEP,
+        "configured_default_cep": settings.CEP,
         "model": "source_product + canonical_product + price_snapshot",
         "comparison_endpoints": ["/comparison/canonical-products", "/comparison/canonical/{id}"],
         "health_endpoints": ["/health/live", "/health/ready"],
