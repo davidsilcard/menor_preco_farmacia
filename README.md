@@ -93,6 +93,7 @@ Uso esperado:
 
 - validar se um `cep` cai em uma regiao declarada
 - consultar cidades e estados planejados/ativos
+- consultar quais redes estao `active`, `unsupported` ou apenas observadas para aquele `cep`
 - apoiar a conversa quando o usuario informar cidade antes de informar o `cep`
 
 Manual operacional da LLM:
@@ -151,6 +152,31 @@ Objetivo:
 - `structural_conflict_matches`: quantos matches atuais ainda apresentam conflito estrutural entre canonical e origem
 
 Isso permite medir qualidade real da resposta, nao apenas volume de catalogo ou tamanho de fila.
+
+## Cobertura por farmacia e regiao
+
+O sistema agora separa:
+
+- cobertura geografica declarada (`coverage_regions`)
+- cobertura operacional por rede (`pharmacy_region_coverages`)
+
+Objetivo:
+
+- nao assumir que uma farmacia valida em uma cidade tambem atende outra
+- evitar falso negativo operacional quando uma rede nao existe na cidade
+- permitir que a operacao pule scrapers explicitamente `unsupported` para um `cep`
+
+Regra operacional:
+
+- `active` / `planned` / `observed`: o scraper pode rodar
+- `unsupported` / `inactive` / `disabled`: o scraper deve ser pulado para aquele `cep`
+- ausencia de declaracao: o scraper continua permitido, mas com cobertura `unknown`
+
+Exemplo atual:
+
+- `FarmaSesi` e `active` em `Jaragua do Sul`
+- `FarmaSesi` e `unsupported` em `Guaramirim` e `Schroeder`
+- `Drogaria Sao Paulo`, `Drogaria Catarinense` e `Preco Popular` estao `active` na expansao observada
 
 ## Arquitetura
 

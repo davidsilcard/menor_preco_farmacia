@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from src.models.base import CanonicalProduct, CoverageRegion, PharmacyLead, ProductMatch, SourceProduct
+from src.services.pharmacy_coverage import coverage_entries_for_cep, pharmacy_region_coverage_payload
 from src.services.catalog_queries import (
     availability_rank,
     best_pricing_offer,
@@ -713,10 +714,12 @@ def get_coverage_service(payload: CoverageLookupRequest, db: Session):
             for region in regions
             if (region.cep_start or "") <= normalized_cep <= (region.cep_end or "")
         ]
+    pharmacy_coverages = coverage_entries_for_cep(db, normalized_cep)
 
     warnings = []
     if not normalized_cep:
         warnings.append("Sem CEP, a leitura de cobertura fica menos precisa e funciona como contexto regional apenas.")
+        warnings.append("Sem CEP, a cobertura por farmacia nao pode ser validada com precisao.")
 
     return tool_response(
         "get_coverage",
@@ -728,6 +731,8 @@ def get_coverage_service(payload: CoverageLookupRequest, db: Session):
             "covered": bool(regions),
             "regions": [coverage_region_payload(region, requested_cep=normalized_cep) for region in regions],
             "region_count": len(regions),
+            "pharmacies": [pharmacy_region_coverage_payload(entry, requested_cep=normalized_cep) for entry in pharmacy_coverages],
+            "pharmacy_count": len(pharmacy_coverages),
             "next_action": "respond_now",
             "next_action_reason": "A cobertura declarada foi consultada sem alterar o fluxo de busca por preco.",
         },

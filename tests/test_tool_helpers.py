@@ -11,7 +11,7 @@ from src.main import (
     list_source_products as _list_source_products,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import CatalogRequest, CmedPriceEntry, CoverageRegion, OperationJob, Pharmacy, PharmacyLead, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
+from src.models.base import CatalogRequest, CmedPriceEntry, CoverageRegion, OperationJob, Pharmacy, PharmacyLead, PharmacyRegionCoverage, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.catalog_queries import (
     anchor_search_tokens,
@@ -63,6 +63,7 @@ from src.services.operational_cycle import collection_schedule_status, parse_col
 from src.services.ops import live_health_payload as _live_health_payload
 from src.services.ops import ops_metrics_payload as _ops_metrics_payload
 from src.services.ops import readiness_health_payload as _readiness_health_payload
+from src.services.pharmacy_coverage import scraper_coverage_decision as _scraper_coverage_decision
 from src.services.retention import purge_expired_operational_data_in_session as _purge_expired_operational_data_in_session
 from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scheduled_collection import (
@@ -173,6 +174,7 @@ class _FakeSession:
         self.regulatory_aliases = []
         self.cmed_price_entries = []
         self.coverage_regions = []
+        self.pharmacy_region_coverages = []
         self.pharmacy_leads = []
         self.commits = 0
         self.closed = False
@@ -201,6 +203,8 @@ class _FakeSession:
             return _FakeQuery(self.coverage_regions)
         if model is PharmacyLead:
             return _FakeQuery(self.pharmacy_leads)
+        if model is PharmacyRegionCoverage:
+            return _FakeQuery(self.pharmacy_region_coverages)
         if model is ScrapeRun:
             return _FakeQuery(getattr(self, "scrape_runs", []))
         if model is SourceProduct:
@@ -263,6 +267,11 @@ class _FakeSession:
         if isinstance(instance, PharmacyLead):
             instance.id = instance.id or len(self.pharmacy_leads) + 1
             self.pharmacy_leads.append(instance)
+        if isinstance(instance, PharmacyRegionCoverage):
+            instance.id = instance.id or len(self.pharmacy_region_coverages) + 1
+            if not getattr(instance, "pharmacy", None):
+                instance.pharmacy = self.get(Pharmacy, instance.pharmacy_id)
+            self.pharmacy_region_coverages.append(instance)
         if isinstance(instance, PriceSnapshot):
             instance.id = instance.id or len(self.price_snapshots) + 1
             self.price_snapshots.append(instance)
@@ -289,6 +298,7 @@ class _FakeSession:
             SourceProduct: self.source_products,
             ProductMatch: self.matches,
             PriceSnapshot: self.price_snapshots,
+            PharmacyRegionCoverage: self.pharmacy_region_coverages,
         }.get(model)
         if items is None:
             raise AssertionError(f"Unexpected model get: {model}")
@@ -314,6 +324,8 @@ class _FakeSession:
             self.search_jobs.remove(instance)
         if isinstance(instance, TrackedItemByCep) and instance in self.tracked_items:
             self.tracked_items.remove(instance)
+        if isinstance(instance, PharmacyRegionCoverage) and instance in self.pharmacy_region_coverages:
+            self.pharmacy_region_coverages.remove(instance)
 
     def count(self):
         raise AssertionError("count() should be called on _FakeQuery, not session")
@@ -418,6 +430,69 @@ class ToolHelperTests(unittest.TestCase):
         self.assertIn("get_coverage", tool_names)
         self.assertIn("submit_pharmacy_lead", tool_names)
         self.assertIn("get_search_job", tool_names)
+
+    def test_scraper_coverage_decision_skips_explicitly_unsupported_pharmacy(self):
+        db = _FakeSession([])
+        farmacia = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi", website="https://www.farmasesi.com.br")
+        db.pharmacies.append(farmacia)
+        db.pharmacy_region_coverages.append(
+            PharmacyRegionCoverage(
+                id=1,
+                pharmacy_id=1,
+                pharmacy=farmacia,
+                city="Guaramirim",
+                state="SC",
+                cep_start="89270000",
+                cep_end="89274999",
+                status="unsupported",
+                confidence="official",
+                verification_source="official_store_list",
+            )
+        )
+        decision = _scraper_coverage_decision(db, "farmasesi", "89270000")
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["status"], "unsupported")
+
+    def test_scraper_coverage_decision_allows_unknown_pharmacy_scope(self):
+        db = _FakeSession([])
+        decision = _scraper_coverage_decision(db, "farmasesi", "89270000")
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["status"], "unknown")
+
+    def test_get_coverage_service_returns_pharmacy_coverages_for_cep(self):
+        db = _FakeSession([])
+        farmacia = Pharmacy(id=1, name="Drogaria Sao Paulo", slug="drogaria-sao-paulo", website="https://example.com")
+        db.pharmacies.append(farmacia)
+        db.coverage_regions.append(
+            CoverageRegion(
+                id=1,
+                city="Guaramirim",
+                state="SC",
+                cep_start="89270000",
+                cep_end="89274999",
+                priority=20,
+                status="planned",
+            )
+        )
+        db.pharmacy_region_coverages.append(
+            PharmacyRegionCoverage(
+                id=1,
+                pharmacy_id=1,
+                pharmacy=farmacia,
+                city="Guaramirim",
+                state="SC",
+                cep_start="89270000",
+                cep_end="89274999",
+                status="active",
+                confidence="observed",
+                verification_source="observed_runtime_validation",
+            )
+        )
+        payload = CoverageLookupRequest(cep="89270000", city="Guaramirim", state="SC")
+        result = _get_coverage_service(payload, db)
+        self.assertTrue(result["result"]["covered"])
+        self.assertEqual(result["result"]["pharmacy_count"], 1)
+        self.assertEqual(result["result"]["pharmacies"][0]["pharmacy_slug"], "drogaria-sao-paulo")
 
     def test_build_price_summary_returns_totals(self):
         items = [

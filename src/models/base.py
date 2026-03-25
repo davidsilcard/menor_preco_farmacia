@@ -162,6 +162,36 @@ class CoverageRegion(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class PharmacyRegionCoverage(Base):
+    __tablename__ = "pharmacy_region_coverages"
+    __table_args__ = (
+        UniqueConstraint(
+            "pharmacy_id",
+            "city",
+            "state",
+            "cep_start",
+            "cep_end",
+            name="uq_pharmacy_region_coverages_scope",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    pharmacy_id = Column(Integer, ForeignKey("pharmacies.id"), nullable=False, index=True)
+    city = Column(String, nullable=False, index=True)
+    state = Column(String, nullable=False, index=True)
+    cep_start = Column(String, nullable=False, index=True)
+    cep_end = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="unknown", index=True)
+    confidence = Column(String, nullable=False, default="observed", index=True)
+    verification_source = Column(String)
+    last_verified_at = Column(DateTime)
+    notes = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    pharmacy = relationship("Pharmacy")
+
+
 class SourceProduct(Base):
     __tablename__ = "source_products"
     __table_args__ = (

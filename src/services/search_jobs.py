@@ -14,6 +14,7 @@ from src.services.catalog_queries import (
     preferred_search_terms,
 )
 from src.services.demand_tracking import sync_tracked_item_with_search_results
+from src.services.pharmacy_coverage import scraper_coverage_decision
 from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scraper_registry import SCRAPER_REGISTRY
 from src.services.tool_use import item_availability_summary
@@ -172,6 +173,21 @@ def process_search_job(job_id: int | None = None):
         search_terms = preferred_search_terms(job.query) or [job.query]
         try:
             for scraper_slug, runtime_type, scraper_cls in SCRAPER_REGISTRY:
+                coverage_decision = scraper_coverage_decision(session, scraper_slug, job.cep)
+                if not coverage_decision["allowed"]:
+                    scraper_results.append(
+                        {
+                            "pharmacy_slug": scraper_slug,
+                            "runtime": runtime_type,
+                            "search_terms": search_terms,
+                            "products_found": 0,
+                            "status": "skipped",
+                            "error_message": "Cobertura declarada da farmacia nao suporta este CEP.",
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
+                        }
+                    )
+                    continue
                 if runtime_type == "browser" and not settings.ON_DEMAND_ENABLE_BROWSER_SCRAPERS:
                     scraper_results.append(
                         {
@@ -180,6 +196,8 @@ def process_search_job(job_id: int | None = None):
                             "products_found": 0,
                             "status": "skipped",
                             "error_message": "Browser scrapers desabilitadas para busca sob demanda.",
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                         }
                     )
                     continue
@@ -196,6 +214,8 @@ def process_search_job(job_id: int | None = None):
                             "pharmacy_slug": scraper_slug,
                             "runtime": runtime_type,
                             "search_terms": search_terms,
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                             **result,
                         }
                     )
@@ -208,6 +228,8 @@ def process_search_job(job_id: int | None = None):
                             "products_found": 0,
                             "status": "failed",
                             "error_message": str(exc)[:500],
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                         }
                     )
 

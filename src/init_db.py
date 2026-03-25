@@ -4,7 +4,8 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from src.core.logging import get_logger, log_event
-from src.models.base import Base, CoverageRegion, Pharmacy, engine
+from src.models.base import Base, CoverageRegion, Pharmacy, PharmacyRegionCoverage, engine
+from src.services.pharmacy_coverage import seeded_pharmacy_region_coverages
 
 LOGGER = get_logger(__name__)
 
@@ -151,6 +152,7 @@ def init_db():
             "notes": "Expansao declarada complementar para a mesma microrregiao.",
         },
     ]
+    initial_pharmacy_region_coverages = seeded_pharmacy_region_coverages()
 
     with Session(engine) as session:
         for pharmacy_data in initial_pharmacies:
@@ -191,6 +193,75 @@ def init_db():
             else:
                 session.add(CoverageRegion(**region_data))
 
+        pharmacy_by_slug = {pharmacy.slug: pharmacy for pharmacy in session.query(Pharmacy).all()}
+        seeded_pharmacy_scope_keys = {
+            (
+                item["pharmacy_slug"],
+                item["city"],
+                item["state"],
+                item["cep_start"],
+                item["cep_end"],
+            )
+            for item in initial_pharmacy_region_coverages
+        }
+        existing_pharmacy_coverages = session.query(PharmacyRegionCoverage).all()
+        for coverage in existing_pharmacy_coverages:
+            pharmacy_slug = getattr(getattr(coverage, "pharmacy", None), "slug", None) or next(
+                (
+                    slug
+                    for slug, pharmacy in pharmacy_by_slug.items()
+                    if pharmacy.id == coverage.pharmacy_id
+                ),
+                None,
+            )
+            key = (
+                pharmacy_slug,
+                coverage.city,
+                coverage.state,
+                coverage.cep_start,
+                coverage.cep_end,
+            )
+            if pharmacy_slug and key not in seeded_pharmacy_scope_keys and pharmacy_slug in {
+                item["pharmacy_slug"] for item in initial_pharmacy_region_coverages
+            }:
+                session.delete(coverage)
+
+        for coverage_data in initial_pharmacy_region_coverages:
+            pharmacy = pharmacy_by_slug.get(coverage_data["pharmacy_slug"])
+            if not pharmacy:
+                continue
+            coverage = (
+                session.query(PharmacyRegionCoverage)
+                .filter_by(
+                    pharmacy_id=pharmacy.id,
+                    city=coverage_data["city"],
+                    state=coverage_data["state"],
+                    cep_start=coverage_data["cep_start"],
+                    cep_end=coverage_data["cep_end"],
+                )
+                .first()
+            )
+            payload = {
+                "pharmacy_id": pharmacy.id,
+                "city": coverage_data["city"],
+                "state": coverage_data["state"],
+                "cep_start": coverage_data["cep_start"],
+                "cep_end": coverage_data["cep_end"],
+                "status": coverage_data["status"],
+                "confidence": coverage_data["confidence"],
+                "verification_source": coverage_data["verification_source"],
+                "last_verified_at": coverage_data["last_verified_at"],
+                "notes": coverage_data["notes"],
+            }
+            if coverage:
+                coverage.status = payload["status"]
+                coverage.confidence = payload["confidence"]
+                coverage.verification_source = payload["verification_source"]
+                coverage.last_verified_at = payload["last_verified_at"]
+                coverage.notes = payload["notes"]
+            else:
+                session.add(PharmacyRegionCoverage(**payload))
+
         session.commit()
         log_event(
             LOGGER,
@@ -198,6 +269,7 @@ def init_db():
             "database_init_completed",
             pharmacies_seeded=len(initial_pharmacies),
             coverage_regions_seeded=len(initial_coverage_regions),
+            pharmacy_region_coverages_seeded=len(initial_pharmacy_region_coverages),
         )
 
 

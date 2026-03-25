@@ -6,6 +6,7 @@ import re
 from src.core.config import settings
 from src.core.logging import get_logger, log_event
 from src.models.base import SessionLocal, TrackedItemByCep
+from src.services.pharmacy_coverage import scraper_coverage_decision
 from src.scrapers.base import BaseScraper
 from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scraper_registry import SCRAPER_REGISTRY
@@ -160,6 +161,20 @@ def run_scheduled_collection(cep: str | None = None):
 
             scraper_results = []
             for scraper_slug, runtime_type, scraper_cls in SCRAPER_REGISTRY:
+                coverage_decision = scraper_coverage_decision(session, scraper_slug, plan_cep)
+                if not coverage_decision["allowed"]:
+                    scraper_results.append(
+                        {
+                            "pharmacy_slug": scraper_slug,
+                            "runtime": runtime_type,
+                            "status": "skipped",
+                            "products_found": 0,
+                            "error_message": "Cobertura declarada da farmacia nao suporta este CEP.",
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
+                        }
+                    )
+                    continue
                 if runtime_type == "browser" and not settings.SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS:
                     scraper_results.append(
                         {
@@ -168,6 +183,8 @@ def run_scheduled_collection(cep: str | None = None):
                             "status": "skipped",
                             "products_found": 0,
                             "error_message": "Browser scrapers desabilitadas para coleta agendada.",
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                         }
                     )
                     continue
@@ -184,6 +201,8 @@ def run_scheduled_collection(cep: str | None = None):
                         {
                             "pharmacy_slug": scraper_slug,
                             "runtime": runtime_type,
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                             **result,
                         }
                     )
@@ -195,6 +214,8 @@ def run_scheduled_collection(cep: str | None = None):
                             "status": "failed",
                             "products_found": 0,
                             "error_message": str(exc)[:500],
+                            "coverage_status": coverage_decision["status"],
+                            "coverage_confidence": coverage_decision["confidence"],
                         }
                     )
 

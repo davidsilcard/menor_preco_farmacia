@@ -55,6 +55,8 @@ Para cobertura declarada:
 - `result.covered`
 - `result.regions`
 - `result.region_count`
+- `result.pharmacies`
+- `result.pharmacy_count`
 
 Em respostas de cesta/lista/nota tambem existem:
 
@@ -231,6 +233,13 @@ Regras:
 - `get_coverage` nao substitui `search_products`
 - para preco e oferta, a chave continua sendo `cep`
 - `cidade` e `estado` sao apoio de contexto, nao chave principal de consulta de mercado
+- `result.pharmacies` mostra quais redes estao declaradas como `active`, `unsupported` ou `unknown` para o `cep`
+
+Leitura recomendada:
+
+- `active`: rede priorizada para a regiao
+- `unsupported`: rede conhecida, mas sem cobertura confirmada na regiao; nao prometa essa farmacia ao usuario
+- `unknown`: ainda sem declaracao; pode existir, mas nao foi formalmente validada
 
 ## Como interpretar `offers`
 
