@@ -29,6 +29,7 @@ Campos importantes:
 
 - `result.resolution_source`
 - `result.results`
+- `result.match_mode`
 - `result.catalog_request`
 - `result.search_job`
 - `result.operation_job`
@@ -101,10 +102,35 @@ Cada item pode ter:
 
 - `canonical_product_id`
 - `canonical_name`
+- `display_name`
+- `presentation_group`
 - `score`
 - `offers`
 - `data_freshness`
 - `availability_summary`
+
+## Quando usar `match_mode`
+
+`search_products` aceita:
+
+- `match_mode = broad`
+- `match_mode = strict`
+
+Regra operacional:
+
+- `broad`
+  - usar quando o usuario pediu apenas o nome do remedio
+  - exemplo: `loratadina`, `glifage`, `dipirona`
+  - o backend pode trazer variacoes diferentes de dosagem e apresentacao
+  - a LLM deve agrupar por `presentation_group`
+
+- `strict`
+  - usar quando o usuario pediu dosagem explicita
+  - exemplo: `glifage 500mg`, `dipirona 1g`, `clonazepam gotas 20ml`
+  - o backend deve manter a dosagem pedida e remover variacoes de dosagem diferentes
+  - variacoes como `XR` podem continuar, desde que a dosagem bata
+
+`strict` nao deve ser usado para esconder variacoes quando o usuario pediu apenas o nome base do remedio.
 
 Se `results` vier vazio:
 

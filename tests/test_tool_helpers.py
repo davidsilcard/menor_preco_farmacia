@@ -1,6 +1,7 @@
 import unittest
 from datetime import UTC, datetime, timedelta
 
+from fastapi import HTTPException
 import src.scrapers.base as scraper_base_module
 from src.mcp_server import _tool_definitions as _mcp_tool_definitions
 from src.main import (
@@ -1745,6 +1746,97 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["results_with_offers_count"], 2)
         self.assertEqual(response["result"]["unique_pharmacies_count"], 1)
         self.assertEqual(response["result"]["unique_pharmacies"], ["FarmaSesi"])
+
+    def test_search_products_service_strict_mode_filters_other_strengths_but_keeps_xr_same_strength(self):
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        canonical_500 = CanonicalProduct(
+            id=51,
+            canonical_name="Glifage 500mg 30 Comprimidos",
+            normalized_name="glifage 500mg 30 comprimidos",
+            dosage="500mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
+        canonical_xr_500 = CanonicalProduct(
+            id=52,
+            canonical_name="Glifage XR 500mg 30 Comprimidos",
+            normalized_name="glifage xr 500mg 30 comprimidos",
+            dosage="500mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
+        canonical_850 = CanonicalProduct(
+            id=53,
+            canonical_name="Glifage 850mg 30 Comprimidos",
+            normalized_name="glifage 850mg 30 comprimidos",
+            dosage="850mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
+
+        source_products = []
+        matches = []
+        snapshots = []
+        now = datetime.now(UTC).replace(tzinfo=None)
+        for product_id, canonical, price in [
+            (61, canonical_500, 27.13),
+            (62, canonical_xr_500, 8.82),
+            (63, canonical_850, 34.28),
+        ]:
+            source_product = SourceProduct(
+                id=product_id,
+                pharmacy=pharmacy,
+                pharmacy_id=1,
+                raw_name=canonical.canonical_name,
+                normalized_name=canonical.normalized_name,
+                source_sku=f"sku-{product_id}",
+            )
+            match = ProductMatch(
+                id=product_id,
+                source_product_id=product_id,
+                canonical_product_id=canonical.id,
+                match_type="normalized_name_strict",
+                review_status="auto_approved",
+                confidence=0.9,
+            )
+            match.source_product = source_product
+            match.canonical_product = canonical
+            source_product.match = match
+            canonical.matches = [match]
+            source_products.append(source_product)
+            matches.append(match)
+            snapshots.append(
+                PriceSnapshot(
+                    id=product_id,
+                    source_product_id=product_id,
+                    price=price,
+                    availability="available",
+                    captured_at=now,
+                    scrape_run_id=1,
+                    cep="89254300",
+                )
+            )
+
+        session = _FakeSession([canonical_500, canonical_xr_500, canonical_850])
+        session.source_products = source_products
+        session.matches = matches
+        session.price_snapshots = snapshots
+
+        response = _search_products_service("glifage 500mg", "89254300", session, match_mode="strict")
+
+        self.assertEqual(response["result"]["match_mode"], "strict")
+        self.assertEqual(response["result"]["results_count"], 2)
+        self.assertEqual(
+            [item["canonical_name"] for item in response["result"]["results"]],
+            ["Glifage 500mg 30 Comprimidos", "Glifage XR 500mg 30 Comprimidos"],
+        )
+        self.assertEqual(response["warnings"], [])
+
+    def test_search_products_service_rejects_invalid_match_mode(self):
+        session = _FakeSession([])
+
+        with self.assertRaises(HTTPException):
+            _search_products_service("glifage 500mg", "89254300", session, match_mode="invalid")
 
     def test_compare_shopping_list_service_exposes_resolution_source_summary(self):
         session = _FakeSession([])

@@ -80,6 +80,7 @@ def _tool_definitions():
                 "properties": {
                     "query": {"type": "string"},
                     "cep": {"type": "string"},
+                    "match_mode": {"type": "string", "enum": ["broad", "strict"]},
                 },
                 "required": ["query", "cep"],
             },
@@ -259,6 +260,7 @@ def _call_tool(name: str, arguments: dict):
             result = search_products_service(
                 query=_require(arguments, "query"),
                 cep=_require(arguments, "cep"),
+                match_mode=arguments.get("match_mode", "broad"),
                 db=session,
             )
         elif name == "compare_shopping_list":

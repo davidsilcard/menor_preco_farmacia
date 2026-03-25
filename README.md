@@ -364,6 +364,7 @@ Esses endpoints sao os mais importantes para a LLM quando a pergunta do usuario 
 
 - `GET /tool/search-products?query=...`
 - `GET /tool/search-products?query=...&cep=...`
+- `GET /tool/search-products?query=...&cep=...&match_mode=broad|strict`
 - `POST /tool/compare-shopping-list`
 - `POST /tool/compare-invoice-items`
 - `POST /tool/compare-receipt`

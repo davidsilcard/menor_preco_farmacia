@@ -1,5 +1,6 @@
 import re
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from src.models.base import CanonicalProduct, ProductMatch, SourceProduct
@@ -144,6 +145,49 @@ def flattened_tool_ref_lists(*, catalog_requests=None, search_jobs=None, operati
         "operation_job_ids": [item["operation_job_id"] for item in (operation_jobs or []) if item and item.get("operation_job_id") is not None],
         "tracked_item_ids": [item["tracked_item_id"] for item in (tracked_items or []) if item.get("tracked_item_id") is not None],
     }
+
+
+def normalize_match_mode(match_mode: str | None):
+    normalized = (match_mode or "broad").strip().lower()
+    if normalized not in {"broad", "strict"}:
+        raise HTTPException(status_code=400, detail="match_mode invalido; use 'broad' ou 'strict'.")
+    return normalized
+
+
+def requested_strength_tokens(query: str):
+    normalized_query = normalize_query(query)
+    matches = re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:mg/ml|mg|g|ml|ui)\b", normalized_query)
+    return [re.sub(r"\s+", "", match) for match in matches]
+
+
+def result_strength_tokens(result: dict):
+    haystacks = [
+        result.get("display_name"),
+        result.get("presentation_group"),
+        result.get("canonical_name"),
+    ]
+    tokens = set()
+    for value in haystacks:
+        normalized = normalize_query(value or "")
+        matches = re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:mg/ml|mg|g|ml|ui)\b", normalized)
+        tokens.update(re.sub(r"\s+", "", match) for match in matches)
+    return tokens
+
+
+def filter_results_by_match_mode(results: list[dict], query: str, match_mode: str):
+    if match_mode != "strict":
+        return results
+
+    strengths = requested_strength_tokens(query)
+    if not strengths:
+        return results
+
+    filtered = []
+    for result in results:
+        candidate_strengths = result_strength_tokens(result)
+        if all(strength in candidate_strengths for strength in strengths):
+            filtered.append(result)
+    return filtered
 
 
 def find_matches_with_resolution_source(db: Session, query: str, latest_prices: dict, *, limit: int | None = None):
@@ -331,7 +375,8 @@ def availability_warnings(items: list[dict]):
     return warnings
 
 
-def search_products_service(query: str, cep: str, db: Session):
+def search_products_service(query: str, cep: str, db: Session, *, match_mode: str = "broad"):
+    normalized_match_mode = normalize_match_mode(match_mode)
     requested_cep = validate_cep_context(cep)
     latest_prices = build_latest_price_map(db, requested_cep)
     cmed_reference_map = build_cmed_reference_map(db)
@@ -354,12 +399,16 @@ def search_products_service(query: str, cep: str, db: Session):
         for score, canonical_product in matches
         for offers in [canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)]
     ]
+    unfiltered_results_count = len(results)
+    results = filter_results_by_match_mode(results, query, normalized_match_mode)
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     catalog_request = None
     search_job = None
     operation_job = None
     tracked_item = None
     warnings = [] if results else ["Nenhum produto canonico encontrado para a consulta."]
+    if normalized_match_mode == "strict" and unfiltered_results_count > len(results):
+        warnings.append("Modo estrito removeu variacoes com dosagem diferente da solicitada.")
     if results and confidence < 0.5:
         warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
     if results:
@@ -394,8 +443,9 @@ def search_products_service(query: str, cep: str, db: Session):
 
     return tool_response(
         "search_products",
-        {"query": query, "cep": cep},
+        {"query": query, "cep": cep, "match_mode": normalized_match_mode},
         {
+            "match_mode": normalized_match_mode,
             "resolution_source": result_resolution_source,
             "outcome": outcome_for_results(results, requires_polling=requires_polling),
             "evidence_level": evidence_level(result_resolution_source, results),

@@ -387,10 +387,11 @@ def list_pending_reviews(
 def tool_search_products(
     query: str = Query(..., min_length=2),
     cep: str = Query(..., min_length=8),
+    match_mode: str = Query("broad"),
     db: Session = Depends(get_db),
 ):
     try:
-        return search_products_service(query, cep, db)
+        return search_products_service(query, cep, db, match_mode=match_mode)
     except HTTPException:
         raise
     except Exception as exc:
