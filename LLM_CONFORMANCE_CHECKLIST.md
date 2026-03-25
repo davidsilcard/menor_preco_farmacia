@@ -4,6 +4,13 @@
 
 Validar se uma LLM externa sabe usar o MCP corretamente.
 
+Ferramentas de apoio:
+
+- `LLM_OPERATOR_MANUAL.md`
+- `LLM_TOOL_EXAMPLES.md`
+- `LLM_FINAL_DIAGNOSTIC_TEMPLATE.md`
+- `scripts/llm_conformance_probe.ps1`
+
 Nao basta verificar:
 
 - status HTTP
@@ -183,4 +190,18 @@ Valide ao menos estes cenarios:
 - fila
 - match sem oferta
 - leitura operacional por CEP
+```
+
+## Execucao automatizada em PowerShell
+
+Casos principais:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/llm_conformance_probe.ps1
+```
+
+Matriz completa:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/llm_conformance_probe.ps1 -FullMatrix
 ```

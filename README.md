@@ -78,6 +78,8 @@ Manual operacional da LLM:
 - `LLM_OPERATOR_MANUAL.md`
 - `LLM_TOOL_EXAMPLES.md`
 - `LLM_CONFORMANCE_CHECKLIST.md`
+- `LLM_FINAL_DIAGNOSTIC_TEMPLATE.md`
+- `scripts/llm_conformance_probe.ps1`
 
 ## Semantica de resolucao para a LLM
 
@@ -289,6 +291,27 @@ Subida local:
 
 ```bash
 uv run python -m src.main
+```
+
+## Conformidade de LLM
+
+Para validar se outra LLM esta usando o MCP corretamente:
+
+1. seguir `LLM_OPERATOR_MANUAL.md`
+2. usar `LLM_TOOL_EXAMPLES.md`
+3. validar com `LLM_CONFORMANCE_CHECKLIST.md`
+4. fechar o relatorio com `LLM_FINAL_DIAGNOSTIC_TEMPLATE.md`
+
+Script pronto para PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/llm_conformance_probe.ps1
+```
+
+Matriz completa:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/llm_conformance_probe.ps1 -FullMatrix
 ```
 
 ### Efeito pratico da camada regulatoria
