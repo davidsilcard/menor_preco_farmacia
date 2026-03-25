@@ -136,7 +136,7 @@ def init_db():
             "city": "Guaramirim",
             "state": "SC",
             "cep_start": "89270000",
-            "cep_end": "89279999",
+            "cep_end": "89274999",
             "priority": 20,
             "status": "planned",
             "notes": "Expansao declarada de cobertura para a mesma microrregiao.",
@@ -160,6 +160,18 @@ def init_db():
                 pharmacy.website = pharmacy_data["website"]
             else:
                 session.add(Pharmacy(**pharmacy_data))
+
+        seeded_city_state_pairs = {(item["city"], item["state"]) for item in initial_coverage_regions}
+        seeded_region_keys = {
+            (item["city"], item["state"], item["cep_start"], item["cep_end"])
+            for item in initial_coverage_regions
+        }
+        existing_seeded_regions = session.query(CoverageRegion).all()
+        for region in existing_seeded_regions:
+            pair = (region.city, region.state)
+            key = (region.city, region.state, region.cep_start, region.cep_end)
+            if pair in seeded_city_state_pairs and key not in seeded_region_keys:
+                session.delete(region)
 
         for region_data in initial_coverage_regions:
             region = (
