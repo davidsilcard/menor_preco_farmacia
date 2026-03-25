@@ -73,6 +73,10 @@ Regra pratica:
 - API HTTP operacional: endpoints de monitoramento, fila, health e revisao
 - MCP administrativo: opcional, controlado por flag
 
+Manual operacional da LLM:
+
+- `LLM_OPERATOR_MANUAL.md`
+
 ## Semantica de resolucao para a LLM
 
 As respostas de atendimento agora expõem `resolution_source` para evitar inferencia ambigua pela LLM.
