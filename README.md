@@ -73,6 +73,23 @@ Regra pratica:
 - API HTTP operacional: endpoints de monitoramento, fila, health e revisao
 - MCP administrativo: opcional, controlado por flag
 
+## Semantica de resolucao para a LLM
+
+As respostas de atendimento agora expõem `resolution_source` para evitar inferencia ambigua pela LLM.
+
+Valores esperados:
+
+- `canonical_match`: o resultado veio do catalogo canonico diretamente
+- `source_product_fallback`: o resultado veio de `SourceProduct` ja raspado e reconciliado
+- `queued_enrichment`: ainda nao houve resultado util; a demanda foi registrada e entrou em fila
+- `searched_no_results`: a busca sob demanda terminou sem resultado util
+
+Regra de uso:
+
+- `canonical_match` e `source_product_fallback` podem ser tratados como resposta util imediata
+- `queued_enrichment` nao e resposta final; a LLM deve informar que a busca foi enfileirada
+- `searched_no_results` deve ser tratado como ausencia real de resultado apos processamento, nao como fila pendente
+
 ## Arquitetura
 
 O modelo de dados foi desenhado para evitar comparacao por texto puro.
@@ -247,6 +264,16 @@ uv run python -m src.update_reference_data --skip-cmed
 Contrato dos arquivos:
 
 - `data/reference/README.md`
+
+### Efeito pratico da camada regulatoria
+
+`DCB`, registros regulatorios e `CMED` nao ficam isolados em backoffice.
+Eles ja influenciam o comportamento real da API:
+
+- expandem buscas por aliases regulatorios
+- ancoram matching de `SourceProduct` antes de criar canonical novo
+- validam preco raspado contra referencia `CMED`
+- reduzem ida desnecessaria para fila quando ja existe `SourceProduct` util no banco
 
 ## Endpoints atuais
 

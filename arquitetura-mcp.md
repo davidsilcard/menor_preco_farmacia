@@ -118,6 +118,23 @@ No detalhe por farmacia, uma origem tambem pode aparecer como `skipped` quando d
 
 O agente nao deve tratar `partial_success` como erro fatal, mas tambem nao deve responder como se a cobertura estivesse completa.
 
+### Origem de resolucao
+
+As tools de atendimento e os payloads de `search_job` passam a expor `resolution_source`.
+
+Semantica:
+
+- `canonical_match`: o item foi resolvido pelo catalogo canonico
+- `source_product_fallback`: o item foi resolvido reaproveitando `SourceProduct` ja coletado
+- `queued_enrichment`: a tool nao achou resultado util imediato e abriu fila
+- `searched_no_results`: a fila rodou e terminou sem resultado util
+
+Isso permite que a LLM diferencie:
+
+- resposta util imediata
+- fallback operacional pendente
+- ausencia real de resultado apos processamento
+
 ## Coleta orientada por demanda
 
 O objetivo nao e varrer o catalogo inteiro das farmacias.
@@ -184,3 +201,4 @@ Isso deixa claro para a LLM e para a operacao humana que:
 - um preco nao e "agora"; ele pertence a um ciclo de coleta
 - a resposta deve carregar contexto de frescor
 - o sistema so coleta demanda relevante do CEP
+- produto ja raspado deve ser reaproveitado antes de abrir nova fila desnecessaria
