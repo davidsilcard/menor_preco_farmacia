@@ -1650,6 +1650,87 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["offers_count"], 1)
         self.assertIsNone(response["result"]["search_job"])
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 20)
+        self.assertEqual(response["result"]["results_with_offers_count"], 1)
+        self.assertEqual(response["result"]["unique_pharmacies_count"], 1)
+        self.assertEqual(response["result"]["unique_pharmacies"], ["FarmaSesi"])
+
+    def test_search_products_service_distinguishes_offer_count_from_unique_pharmacies(self):
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        canonical_a = CanonicalProduct(id=31, canonical_name="Amoxicilina A", normalized_name="amoxicilina a")
+        canonical_b = CanonicalProduct(id=32, canonical_name="Amoxicilina B", normalized_name="amoxicilina b")
+        source_product_a = SourceProduct(
+            id=41,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Amoxicilina A",
+            normalized_name="amoxicilina a",
+            source_sku="sku-41",
+        )
+        source_product_b = SourceProduct(
+            id=42,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Amoxicilina B",
+            normalized_name="amoxicilina b",
+            source_sku="sku-42",
+        )
+        match_a = ProductMatch(
+            id=41,
+            source_product_id=41,
+            canonical_product_id=31,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match_b = ProductMatch(
+            id=42,
+            source_product_id=42,
+            canonical_product_id=32,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match_a.source_product = source_product_a
+        match_b.source_product = source_product_b
+        match_a.canonical_product = canonical_a
+        match_b.canonical_product = canonical_b
+        source_product_a.match = match_a
+        source_product_b.match = match_b
+        canonical_a.matches = [match_a]
+        canonical_b.matches = [match_b]
+
+        session = _FakeSession([canonical_a, canonical_b])
+        session.source_products = [source_product_a, source_product_b]
+        session.matches = [match_a, match_b]
+        now = datetime.now(UTC).replace(tzinfo=None)
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=41,
+                source_product_id=41,
+                price=19.99,
+                availability="available",
+                captured_at=now,
+                scrape_run_id=1,
+                cep="89254300",
+            ),
+            PriceSnapshot(
+                id=42,
+                source_product_id=42,
+                price=28.99,
+                availability="available",
+                captured_at=now,
+                scrape_run_id=1,
+                cep="89254300",
+            ),
+        ]
+
+        response = _search_products_service("amoxicilina", "89254300", session)
+
+        self.assertEqual(response["result"]["results_count"], 2)
+        self.assertEqual(response["result"]["offers_count"], 2)
+        self.assertEqual(response["result"]["results_with_offers_count"], 2)
+        self.assertEqual(response["result"]["unique_pharmacies_count"], 1)
+        self.assertEqual(response["result"]["unique_pharmacies"], ["FarmaSesi"])
 
     def test_compare_shopping_list_service_exposes_resolution_source_summary(self):
         session = _FakeSession([])

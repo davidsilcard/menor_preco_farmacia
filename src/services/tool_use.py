@@ -77,6 +77,20 @@ def results_offer_count(results: list[dict]):
     return sum(len(result.get("offers") or []) for result in results)
 
 
+def unique_pharmacies(results: list[dict]):
+    pharmacies = {
+        offer["pharmacy"]
+        for result in results
+        for offer in (result.get("offers") or [])
+        if offer.get("pharmacy")
+    }
+    return sorted(pharmacies)
+
+
+def results_with_offers_count(results: list[dict]):
+    return sum(1 for result in results if result.get("offers"))
+
+
 def evidence_level(resolution_source: str | None, results: list[dict]):
     if results_offer_count(results) > 0:
         return "real_offer"
@@ -369,6 +383,9 @@ def search_products_service(query: str, cep: str, db: Session):
             "requires_polling": requires_polling,
             "results_count": len(results),
             "offers_count": results_offer_count(results),
+            "results_with_offers_count": results_with_offers_count(results),
+            "unique_pharmacies_count": len(unique_pharmacies(results)),
+            "unique_pharmacies": unique_pharmacies(results),
             **result_refs,
             "results": results,
             "catalog_request": catalog_request_result,
@@ -461,6 +478,9 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
             "requires_polling": requires_polling,
             "results_count": len(item_results),
             "offers_count": results_offer_count(item_results),
+            "results_with_offers_count": results_with_offers_count(item_results),
+            "unique_pharmacies_count": len(unique_pharmacies(item_results)),
+            "unique_pharmacies": unique_pharmacies(item_results),
             "resolution_source_summary": item_resolution_counts,
             **ref_lists,
             "catalog_requests": catalog_requests,
@@ -575,6 +595,9 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
             "requires_polling": requires_polling,
             "results_count": len(item_results),
             "offers_count": results_offer_count(item_results),
+            "results_with_offers_count": results_with_offers_count(item_results),
+            "unique_pharmacies_count": len(unique_pharmacies(item_results)),
+            "unique_pharmacies": unique_pharmacies(item_results),
             "resolution_source_summary": item_resolution_counts,
             **ref_lists,
             "total_potential_savings": total_potential_savings,
@@ -610,6 +633,9 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "requires_polling": result_payload.get("requires_polling"),
             "results_count": result_payload.get("results_count"),
             "offers_count": result_payload.get("offers_count"),
+            "results_with_offers_count": result_payload.get("results_with_offers_count"),
+            "unique_pharmacies_count": result_payload.get("unique_pharmacies_count"),
+            "unique_pharmacies": result_payload.get("unique_pharmacies", []),
             "resolution_source_summary": result_payload.get("resolution_source_summary", resolution_source_summary(items)),
             "catalog_request_ids": result_payload.get("catalog_request_ids", []),
             "search_job_ids": result_payload.get("search_job_ids", []),
@@ -695,6 +721,9 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
             "requires_polling": requires_polling,
             "results_count": len(results),
             "offers_count": results_offer_count(results),
+            "results_with_offers_count": results_with_offers_count(results),
+            "unique_pharmacies_count": len(unique_pharmacies(results)),
+            "unique_pharmacies": unique_pharmacies(results),
             **result_refs,
             "results": results,
             "catalog_request": catalog_request_result,
@@ -734,6 +763,9 @@ def compare_canonical_product_service(canonical_product_id: int, cep: str, db: S
         "requires_polling": False,
         "results_count": 1,
         "offers_count": len(offers),
+        "results_with_offers_count": 1 if offers else 0,
+        "unique_pharmacies_count": len(unique_pharmacies([{"offers": offers}])),
+        "unique_pharmacies": unique_pharmacies([{"offers": offers}]),
         "resolution_source": "canonical_match",
         "offers": offers,
     }
