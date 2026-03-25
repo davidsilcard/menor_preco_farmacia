@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.exc import IntegrityError
 
-from src.models.base import CanonicalProduct, ProductMatch
+from src.models.base import CanonicalProduct, ProductMatch, RegulatoryProduct
 
 
 @dataclass
@@ -36,6 +36,22 @@ class ProductMatcher:
             canonical = self.session.query(CanonicalProduct).filter_by(anvisa_code=anvisa_code).first()
             if canonical:
                 return MatchDecision(canonical, "anvisa_code", 0.98, "auto_approved")
+
+        regulatory_product = self._find_regulatory_product(product_data)
+        if regulatory_product:
+            canonical = self._find_existing_canonical(
+                ean_gtin or regulatory_product.ean_gtin,
+                anvisa_code or regulatory_product.anvisa_code,
+                regulatory_product=regulatory_product,
+            )
+            if canonical:
+                return MatchDecision(
+                    canonical,
+                    "regulatory_anchor",
+                    0.97,
+                    "auto_approved",
+                    "Produto ancorado por referencia regulatoria antes do matching textual.",
+                )
 
         candidates = self.session.query(CanonicalProduct).filter_by(normalized_name=normalized_name).all()
         if len(candidates) == 1:
@@ -127,20 +143,43 @@ class ProductMatcher:
     def build_canonical_product(self, product_data: dict) -> CanonicalProduct:
         ean_gtin = self._clean_identifier(product_data.get("ean_gtin"))
         anvisa_code = product_data.get("anvisa_code")
+        regulatory_product = self._find_regulatory_product(product_data)
 
-        existing = self._find_existing_canonical(ean_gtin, anvisa_code)
+        if regulatory_product:
+            ean_gtin = ean_gtin or regulatory_product.ean_gtin
+            anvisa_code = anvisa_code or regulatory_product.anvisa_code
+
+        existing = self._find_existing_canonical(ean_gtin, anvisa_code, regulatory_product=regulatory_product)
         if existing:
             return existing
 
+        canonical_name = product_data["raw_name"]
+        normalized_name = product_data["normalized_name"]
+        brand = product_data.get("brand")
+        manufacturer = product_data.get("manufacturer")
+        active_ingredient = product_data.get("active_ingredient")
+        dosage = product_data.get("dosage")
+        presentation = product_data.get("presentation")
+        pack_size = product_data.get("pack_size")
+
+        if regulatory_product:
+            canonical_name = regulatory_product.product_name or canonical_name
+            normalized_name = regulatory_product.normalized_product_name or normalized_name
+            manufacturer = manufacturer or regulatory_product.manufacturer or regulatory_product.registration_holder
+            active_ingredient = active_ingredient or regulatory_product.active_ingredient or regulatory_product.dcb_name
+            dosage = dosage or regulatory_product.dosage or regulatory_product.concentration
+            presentation = presentation or regulatory_product.presentation or regulatory_product.dosage_form
+            pack_size = pack_size or regulatory_product.presentation
+
         canonical = CanonicalProduct(
-            canonical_name=product_data["raw_name"],
-            normalized_name=product_data["normalized_name"],
-            brand=product_data.get("brand"),
-            manufacturer=product_data.get("manufacturer"),
-            active_ingredient=product_data.get("active_ingredient"),
-            dosage=product_data.get("dosage"),
-            presentation=product_data.get("presentation"),
-            pack_size=product_data.get("pack_size"),
+            canonical_name=canonical_name,
+            normalized_name=normalized_name,
+            brand=brand,
+            manufacturer=manufacturer,
+            active_ingredient=active_ingredient,
+            dosage=dosage,
+            presentation=presentation,
+            pack_size=pack_size,
             ean_gtin=ean_gtin,
             anvisa_code=anvisa_code,
         )
@@ -292,7 +331,7 @@ class ProductMatcher:
     def _is_anchored(candidate: CanonicalProduct):
         return bool(candidate.ean_gtin or candidate.anvisa_code)
 
-    def _find_existing_canonical(self, ean_gtin, anvisa_code):
+    def _find_existing_canonical(self, ean_gtin, anvisa_code, regulatory_product=None):
         if ean_gtin:
             canonical = self.session.query(CanonicalProduct).filter_by(ean_gtin=ean_gtin).first()
             if canonical:
@@ -301,6 +340,51 @@ class ProductMatcher:
             canonical = self.session.query(CanonicalProduct).filter_by(anvisa_code=anvisa_code).first()
             if canonical:
                 return canonical
+        if regulatory_product:
+            normalized_product_name = self._normalized(regulatory_product.normalized_product_name or regulatory_product.product_name)
+            if normalized_product_name:
+                canonical = self.session.query(CanonicalProduct).filter_by(normalized_name=normalized_product_name).first()
+                if canonical:
+                    return canonical
+            for candidate in self.session.query(CanonicalProduct).all():
+                if (
+                    self._normalized(candidate.active_ingredient) == self._normalized(regulatory_product.active_ingredient or regulatory_product.dcb_name)
+                    and self._dosage_compatible(candidate.dosage, regulatory_product.dosage or regulatory_product.concentration)
+                    and self._presentation_compatible(candidate.presentation, regulatory_product.presentation or regulatory_product.dosage_form)
+                ):
+                    return candidate
+        return None
+
+    def _find_regulatory_product(self, product_data: dict):
+        ean_gtin = self._clean_identifier(product_data.get("ean_gtin"))
+        anvisa_code = self._clean_identifier(product_data.get("anvisa_code"))
+        normalized_name = self._normalized(product_data.get("normalized_name"))
+        active_ingredient = self._normalized(product_data.get("active_ingredient"))
+        dosage = self._normalized(product_data.get("dosage"))
+        presentation = self._normalized(product_data.get("presentation"))
+
+        regulatory_products = self.session.query(RegulatoryProduct).all()
+        if ean_gtin:
+            for product in regulatory_products:
+                if self._clean_identifier(product.ean_gtin) == ean_gtin:
+                    return product
+        if anvisa_code:
+            for product in regulatory_products:
+                if self._clean_identifier(product.anvisa_code) == anvisa_code:
+                    return product
+        for product in regulatory_products:
+            if normalized_name and self._normalized(product.normalized_product_name or product.product_name) == normalized_name:
+                return product
+            product_active_ingredient = self._normalized(product.active_ingredient or product.dcb_name)
+            product_dosage = self._normalized(product.dosage or product.concentration)
+            product_presentation = self._normalized(product.presentation or product.dosage_form)
+            if (
+                active_ingredient
+                and active_ingredient == product_active_ingredient
+                and (not dosage or dosage == product_dosage)
+                and self._presentation_compatible(presentation, product_presentation)
+            ):
+                return product
         return None
 
     @classmethod

@@ -9,8 +9,10 @@ from src.models.base import CatalogRequest, SearchJob, SessionLocal
 from src.services.catalog_queries import (
     best_pricing_offer,
     build_latest_price_map,
+    build_cmed_reference_map,
     canonical_offer_payload,
     find_matching_canonicals,
+    find_matching_canonicals_from_source_products,
     preferred_search_terms,
 )
 from src.services.scraper_registry import SCRAPER_REGISTRY
@@ -96,7 +98,13 @@ def _run_scraper_for_terms(scraper, terms: list[str], cep: str):
 
 def _job_search_result_payload(session, query: str, cep: str):
     latest_prices = build_latest_price_map(session, cep)
+    cmed_reference_map = build_cmed_reference_map(session)
     matches = find_matching_canonicals(session, query)
+    result_origin = "canonical_match"
+    if not matches:
+        matches = find_matching_canonicals_from_source_products(session, query, latest_prices)
+        if matches:
+            result_origin = "source_product_fallback"
     results = [
         {
             "canonical_product_id": canonical_product.id,
@@ -115,11 +123,12 @@ def _job_search_result_payload(session, query: str, cep: str):
             ),
         }
         for score, canonical_product in matches
-        for offers in [canonical_offer_payload(canonical_product, latest_prices)]
+        for offers in [canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)]
     ]
     return {
         "results_found": len(results),
         "results": results,
+        "result_origin": result_origin if results else None,
     }
 
 

@@ -154,6 +154,8 @@ Fluxo esperado:
 - `src/scrapers/`: scrapers por farmacia
 - `src/main.py`: API FastAPI
 - `src/init_db.py`: reset e criacao do banco
+- `src/update_reference_data.py`: carga e atualizacao de DCB, regulatorio e CMED
+- `data/reference/`: arquivos locais reprocessaveis de referencia
 
 ## Farmacias atuais
 
@@ -191,6 +193,60 @@ O sistema tenta capturar, sempre que possivel:
 - `source_metadata`
 
 Sem esses campos, a comparacao vira heuristica fraca. O foco do projeto e justamente evitar isso.
+
+## Dados regulatorios e CMED
+
+O projeto agora tem uma camada separada de referencia para:
+
+- `DCB`
+- registros regulatorios
+- precos de referencia da `CMED`
+
+Esses dados nao substituem os scrapers de preco por farmacia. Eles servem para:
+
+- melhorar matching
+- reduzir canonicals fracos
+- validar precos raspados
+- permitir recriar o banco do zero e reimportar referencias oficiais
+
+Tabelas novas:
+
+- `regulatory_products`
+- `regulatory_aliases`
+- `cmed_price_entries`
+
+Regra operacional:
+
+- o schema pode ser recriado do zero com `src.init_db`
+- as referencias podem ser reimportadas quantas vezes forem necessarias
+- a atualizacao deve ser tratada como carga idempotente, nao como edicao manual em banco
+
+### Atualizando referencias
+
+Coloque os arquivos em `data/reference/` ou no diretorio configurado por `REFERENCE_DATA_DIR`.
+
+Comandos:
+
+```bash
+uv run python -m src.init_db
+uv run python -m src.update_reference_data
+```
+
+Para substituir integralmente as referencias ja carregadas:
+
+```bash
+uv run python -m src.update_reference_data --replace
+```
+
+Para pular um dataset:
+
+```bash
+uv run python -m src.update_reference_data --skip-cmed
+```
+
+Contrato dos arquivos:
+
+- `data/reference/README.md`
 
 ## Endpoints atuais
 
@@ -382,6 +438,7 @@ Configure `.env` com:
 - `SCHEDULED_COLLECTION_SLOTS=08:00,15:00`
 - `SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES=120`
 - `PRICE_RETENTION_DAYS=90`
+- `REFERENCE_DATA_DIR=data/reference`
 - `SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP=50`
 - `SCHEDULED_COLLECTION_ENABLE_BROWSER_SCRAPERS=false`
 - `ON_DEMAND_ENABLE_BROWSER_SCRAPERS=false`

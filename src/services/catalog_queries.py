@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, selectinload
 
-from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SourceProduct
+from src.models.base import CanonicalProduct, CmedPriceEntry, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, SourceProduct
 from src.scrapers.base import BaseScraper
 
 FRESH_DATA_MAX_AGE_MINUTES = 12 * 60
@@ -229,6 +229,62 @@ def anchor_search_tokens(value: str):
     return anchors
 
 
+def expand_search_queries(db: Session, query: str):
+    normalized_query = normalize_query(query)
+    variants = [normalized_query]
+    if not normalized_query:
+        return variants
+
+    query_tokens = set(tokenize_search_text(normalized_query))
+    strong_identifiers = set(re.findall(r"\b\d{8,14}\b", normalized_query))
+
+    try:
+        aliases = db.query(RegulatoryAlias).all()
+        for alias in aliases:
+            alias_term = normalize_query(getattr(alias, "normalized_alias", None) or getattr(alias, "alias", None))
+            dcb_name = normalize_query(getattr(alias, "dcb_name", None))
+            if not alias_term or not dcb_name:
+                continue
+            if (
+                alias_term == normalized_query
+                or alias_term in normalized_query
+                or normalized_query in alias_term
+                or alias_term in query_tokens
+            ):
+                variants.append(dcb_name)
+
+        regulatory_products = db.query(RegulatoryProduct).all()
+        for product in regulatory_products:
+            product_name = normalize_query(getattr(product, "normalized_product_name", None) or getattr(product, "product_name", None))
+            dcb_name = normalize_query(getattr(product, "dcb_name", None))
+            active_ingredient = normalize_query(getattr(product, "active_ingredient", None))
+            identifiers = {
+                getattr(product, "ean_gtin", None),
+                getattr(product, "anvisa_code", None),
+            }
+            matches_identifier = bool(strong_identifiers.intersection({identifier for identifier in identifiers if identifier}))
+            matches_name = bool(
+                product_name
+                and (
+                    product_name == normalized_query
+                    or product_name in normalized_query
+                    or normalized_query in product_name
+                    or query_tokens.intersection(set(tokenize_search_text(product_name)))
+                )
+            )
+            if matches_identifier or matches_name:
+                if product_name:
+                    variants.append(product_name)
+                if dcb_name:
+                    variants.append(dcb_name)
+                if active_ingredient:
+                    variants.append(active_ingredient)
+    except (AttributeError, TypeError, AssertionError):
+        return list(dict.fromkeys(term for term in variants if term))
+
+    return list(dict.fromkeys(term for term in variants if term))
+
+
 def preferred_search_terms(value: str):
     normalized = normalize_query(value)
     if not normalized:
@@ -251,6 +307,69 @@ def preferred_search_terms(value: str):
     if len(anchor_tokens) >= 2:
         terms.append(" ".join(anchor_tokens[:2]))
     return list(dict.fromkeys(term for term in terms if term))
+
+
+def build_cmed_reference_map(db: Session):
+    try:
+        entries = db.query(CmedPriceEntry).all()
+    except (AttributeError, TypeError, AssertionError):
+        entries = []
+
+    by_ean = {}
+    by_anvisa = {}
+    by_name = {}
+    for entry in entries:
+        if entry.ean_gtin and entry.ean_gtin not in by_ean:
+            by_ean[entry.ean_gtin] = entry
+        if entry.anvisa_code and entry.anvisa_code not in by_anvisa:
+            by_anvisa[entry.anvisa_code] = entry
+        if entry.normalized_product_name and entry.normalized_product_name not in by_name:
+            by_name[entry.normalized_product_name] = entry
+    return {"by_ean": by_ean, "by_anvisa": by_anvisa, "by_name": by_name}
+
+
+def cmed_reference_for_product(source_product: SourceProduct, cmed_reference_map: dict | None):
+    if not cmed_reference_map:
+        return None
+    if source_product.ean_gtin and source_product.ean_gtin in cmed_reference_map["by_ean"]:
+        return cmed_reference_map["by_ean"][source_product.ean_gtin]
+    if source_product.anvisa_code and source_product.anvisa_code in cmed_reference_map["by_anvisa"]:
+        return cmed_reference_map["by_anvisa"][source_product.anvisa_code]
+
+    normalized_name = normalize_query(source_product.normalized_name or source_product.raw_name)
+    if normalized_name in cmed_reference_map["by_name"]:
+        return cmed_reference_map["by_name"][normalized_name]
+    return None
+
+
+def price_validation_payload(price: float, cmed_entry: CmedPriceEntry | None):
+    if not cmed_entry:
+        return {
+            "status": "no_reference",
+            "reference_price": None,
+            "source_dataset": None,
+        }
+
+    reference_price = cmed_entry.pmc_price or cmed_entry.list_price or cmed_entry.pf_price
+    if not reference_price:
+        return {
+            "status": "reference_without_price",
+            "reference_price": None,
+            "source_dataset": cmed_entry.source_dataset,
+        }
+
+    if price > reference_price * 1.05:
+        status = "above_reference"
+    elif price < reference_price * 0.4:
+        status = "below_reference"
+    else:
+        status = "within_reference"
+
+    return {
+        "status": status,
+        "reference_price": reference_price,
+        "source_dataset": cmed_entry.source_dataset,
+    }
 
 
 def has_special_token_conflict(query: str, candidate: str):
@@ -280,7 +399,7 @@ def availability_rank(availability: str | None):
     return 2
 
 
-def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: dict):
+def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: dict, cmed_reference_map: dict | None = None):
     offers = []
     for match in canonical_product.matches:
         source_product = match.source_product
@@ -304,6 +423,10 @@ def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: 
                 "match_confidence": match.confidence,
                 "review_status": match.review_status,
                 "review_notes": match.review_notes,
+                "price_validation": price_validation_payload(
+                    latest_snapshot.price,
+                    cmed_reference_for_product(source_product, cmed_reference_map),
+                ),
             }
         )
 
@@ -476,12 +599,16 @@ def _prefilter_canonical_ids(db: Session, query: str, limit: int):
 
 def _load_candidate_canonicals(db: Session, query: str, limit: int):
     try:
-        candidate_ids = _prefilter_canonical_ids(db, query, limit)
+        candidate_ids = set()
+        for variant in expand_search_queries(db, query):
+            variant_ids = _prefilter_canonical_ids(db, variant, limit)
+            if variant_ids:
+                candidate_ids.update(variant_ids)
         if candidate_ids:
             return (
                 db.query(CanonicalProduct)
                 .options(*_canonical_loader_options())
-                .filter(CanonicalProduct.id.in_(candidate_ids))
+                .filter(CanonicalProduct.id.in_(list(candidate_ids)))
                 .all()
             )
     except (AttributeError, TypeError, AssertionError):
@@ -492,12 +619,79 @@ def _load_candidate_canonicals(db: Session, query: str, limit: int):
 
 def find_matching_canonicals(db: Session, query: str, limit: int = 5):
     canonical_products = _load_candidate_canonicals(db, query, limit)
+    query_variants = expand_search_queries(db, query)
 
     ranked = []
     for canonical_product in canonical_products:
-        score = score_canonical_match(canonical_product, query)
+        score = max(score_canonical_match(canonical_product, variant) for variant in query_variants)
         if score >= 35:
             ranked.append((score, canonical_product))
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     return ranked[:limit]
+
+
+def _source_product_match_score(source_product: SourceProduct, query_variants: list[str]):
+    source_haystacks = [
+        normalize_query(source_product.raw_name),
+        normalize_query(source_product.normalized_name),
+        normalize_query(source_product.active_ingredient),
+        normalize_query(source_product.brand),
+    ]
+    source_haystacks = [value for value in source_haystacks if value]
+    if not source_haystacks:
+        return 0
+
+    best_score = 0
+    source_tokens = set()
+    for haystack in source_haystacks:
+        source_tokens.update(tokenize_search_text(haystack))
+
+    for variant in query_variants:
+        normalized_variant = normalize_query(variant)
+        if not normalized_variant:
+            continue
+        variant_score = 0
+        if any(haystack == normalized_variant for haystack in source_haystacks):
+            variant_score += 80
+        if any(normalized_variant in haystack or haystack in normalized_variant for haystack in source_haystacks):
+            variant_score += 20
+
+        variant_tokens = set(tokenize_search_text(normalized_variant))
+        overlap = variant_tokens.intersection(source_tokens)
+        if overlap:
+            variant_score += min(len(overlap) * 15, 45)
+        if variant_tokens and overlap == variant_tokens:
+            variant_score += 25
+        best_score = max(best_score, variant_score)
+
+    return best_score
+
+
+def find_matching_canonicals_from_source_products(db: Session, query: str, latest_prices: dict, limit: int = 5):
+    query_variants = expand_search_queries(db, query)
+    source_products = db.query(SourceProduct).options(selectinload(SourceProduct.pharmacy), selectinload(SourceProduct.match)).all()
+
+    ranked = {}
+    for source_product in source_products:
+        if source_product.id not in latest_prices:
+            continue
+        if not source_product.match or not source_product.match.canonical_product_id:
+            continue
+        match = source_product.match
+        canonical_product = getattr(match, "canonical_product", None)
+        if not canonical_product:
+            continue
+
+        source_score = _source_product_match_score(source_product, query_variants)
+        canonical_score = max(score_canonical_match(canonical_product, variant) for variant in query_variants)
+        score = max(source_score, canonical_score)
+        if score < 35:
+            continue
+
+        current = ranked.get(canonical_product.id)
+        if not current or score > current[0]:
+            ranked[canonical_product.id] = (score, canonical_product)
+
+    ordered = sorted(ranked.values(), key=lambda item: item[0], reverse=True)
+    return ordered[:limit]

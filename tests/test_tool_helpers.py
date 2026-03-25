@@ -10,13 +10,19 @@ from src.main import (
     list_source_products as _list_source_products,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import CatalogRequest, OperationJob, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
+from src.models.base import CatalogRequest, CmedPriceEntry, OperationJob, Pharmacy, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.catalog_queries import (
     anchor_search_tokens,
     availability_rank as _availability_rank,
     best_pricing_offer as _best_pricing_offer,
+    build_cmed_reference_map as _build_cmed_reference_map,
     build_latest_price_map as _build_latest_price_map,
+    canonical_offer_payload as _canonical_offer_payload,
+    cmed_reference_for_product as _cmed_reference_for_product,
+    expand_search_queries as _expand_search_queries,
+    find_matching_canonicals as _find_matching_canonicals,
+    find_matching_canonicals_from_source_products as _find_matching_canonicals_from_source_products,
     freshness_status as _freshness_status,
     has_special_token_conflict as _has_special_token_conflict,
     normalize_cep as _normalize_cep,
@@ -149,6 +155,9 @@ class _FakeSession:
         self.operation_jobs = []
         self.search_jobs = []
         self.tracked_items = []
+        self.regulatory_products = []
+        self.regulatory_aliases = []
+        self.cmed_price_entries = []
         self.commits = 0
         self.closed = False
         self.flush_validator = None
@@ -166,6 +175,12 @@ class _FakeSession:
             return _FakeQuery(self.search_jobs)
         if model is TrackedItemByCep:
             return _FakeQuery(self.tracked_items)
+        if model is RegulatoryProduct:
+            return _FakeQuery(self.regulatory_products)
+        if model is RegulatoryAlias:
+            return _FakeQuery(self.regulatory_aliases)
+        if model is CmedPriceEntry:
+            return _FakeQuery(self.cmed_price_entries)
         if model is ScrapeRun:
             return _FakeQuery(getattr(self, "scrape_runs", []))
         if model is SourceProduct:
@@ -213,6 +228,15 @@ class _FakeSession:
         if isinstance(instance, TrackedItemByCep):
             instance.id = len(self.tracked_items) + 1
             self.tracked_items.append(instance)
+        if isinstance(instance, RegulatoryProduct):
+            instance.id = instance.id or len(self.regulatory_products) + 1
+            self.regulatory_products.append(instance)
+        if isinstance(instance, RegulatoryAlias):
+            instance.id = instance.id or len(self.regulatory_aliases) + 1
+            self.regulatory_aliases.append(instance)
+        if isinstance(instance, CmedPriceEntry):
+            instance.id = instance.id or len(self.cmed_price_entries) + 1
+            self.cmed_price_entries.append(instance)
         if isinstance(instance, PriceSnapshot):
             instance.id = instance.id or len(self.price_snapshots) + 1
             self.price_snapshots.append(instance)
@@ -614,6 +638,122 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(specs[1]["url"], "https://example.com/busca?term=dipirona+sodica")
         self.assertEqual(specs[1]["contains_any"], ["dipirona sodica"])
 
+    def test_expand_search_queries_uses_regulatory_aliases(self):
+        session = _FakeSession(
+            [
+                CanonicalProduct(
+                    id=1,
+                    canonical_name="Empagliflozina 25mg 30 Comprimidos",
+                    normalized_name="empagliflozina 25mg 30 comprimidos",
+                    active_ingredient="empagliflozina",
+                )
+            ]
+        )
+        session.regulatory_aliases = [
+            RegulatoryAlias(id=1, alias_type="brand", dcb_name="empagliflozina", alias="Jardiance", normalized_alias="jardiance")
+        ]
+
+        expanded = _expand_search_queries(session, "jardiance 25mg")
+        matches = _find_matching_canonicals(session, "jardiance 25mg")
+
+        self.assertIn("empagliflozina", expanded)
+        self.assertEqual(matches[0][1].id, 1)
+
+    def test_canonical_offer_payload_includes_cmed_price_validation(self):
+        canonical = CanonicalProduct(id=1, canonical_name="Buscopan Composto", normalized_name="buscopan composto")
+        pharmacy = Pharmacy(id=1, name="Panvel", slug="panvel")
+        source_product = SourceProduct(
+            id=10,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Buscopan Composto 20 Comprimidos",
+            normalized_name="buscopan composto 20 comprimidos",
+            source_sku="sku-10",
+            ean_gtin="7896094921399",
+        )
+        match = ProductMatch(id=1, source_product_id=10, canonical_product_id=1, match_type="ean_gtin", review_status="auto_approved", confidence=1.0)
+        match.source_product = source_product
+        source_product.match = match
+        canonical.matches = [match]
+
+        latest_prices = {
+            10: PriceSnapshot(
+                id=1,
+                source_product_id=10,
+                price=30.0,
+                captured_at=datetime.now(UTC).replace(tzinfo=None),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        }
+        session = _FakeSession([canonical])
+        session.cmed_price_entries = [
+            CmedPriceEntry(
+                id=1,
+                source_dataset="cmed",
+                row_fingerprint="f1",
+                product_name="Buscopan Composto",
+                normalized_product_name="buscopan composto 20 comprimidos",
+                ean_gtin="7896094921399",
+                pmc_price=23.9,
+            )
+        ]
+
+        cmed_map = _build_cmed_reference_map(session)
+        reference = _cmed_reference_for_product(source_product, cmed_map)
+        offers = _canonical_offer_payload(canonical, latest_prices, cmed_map)
+
+        self.assertIsNotNone(reference)
+        self.assertEqual(offers[0]["price_validation"]["status"], "above_reference")
+        self.assertEqual(offers[0]["price_validation"]["reference_price"], 23.9)
+
+    def test_find_matching_canonicals_from_source_products_recovers_results_from_scraped_data(self):
+        canonical = CanonicalProduct(
+            id=20,
+            canonical_name="Dipirona Monoidratada 500mg 20 Comprimidos",
+            normalized_name="metamizol sodico 500mg 20 comprimidos",
+        )
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        source_product = SourceProduct(
+            id=30,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Neosaldina Drageas 20 Comprimidos",
+            normalized_name="neosaldina drageas 20 comprimidos",
+            source_sku="sku-30",
+        )
+        match = ProductMatch(
+            id=1,
+            source_product_id=30,
+            canonical_product_id=20,
+            match_type="regulatory_anchor",
+            review_status="auto_approved",
+            confidence=0.97,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        latest_prices = {
+            30: PriceSnapshot(
+                id=1,
+                source_product_id=30,
+                price=15.0,
+                captured_at=datetime.now(UTC).replace(tzinfo=None),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        }
+
+        matches = _find_matching_canonicals_from_source_products(session, "neosaldina drageas", latest_prices)
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][1].id, 20)
+
     def test_base_scraper_save_products_to_db_persists_product_match_and_snapshot(self):
         class _PersistScraper(BaseScraper):
             pharmacy_slug = "farmacia-teste"
@@ -941,6 +1081,89 @@ class ToolHelperTests(unittest.TestCase):
 
         self.assertEqual(canonical, existing)
         self.assertEqual(session.added, [])
+
+    def test_matcher_uses_regulatory_product_to_anchor_existing_canonical(self):
+        canonical = CanonicalProduct(
+            id=44,
+            canonical_name="Jardiance 25mg 30 Comprimidos",
+            normalized_name="jardiance 25mg 30 comprimidos",
+            active_ingredient="empagliflozina",
+            dosage="25mg",
+            presentation="comprimido",
+            ean_gtin="7891234567890",
+        )
+        session = _FakeSession([canonical])
+        session.regulatory_products = [
+            RegulatoryProduct(
+                id=1,
+                source_system="anvisa",
+                external_id="reg-1",
+                product_name="Jardiance 25mg 30 Comprimidos",
+                normalized_product_name="jardiance 25mg 30 comprimidos",
+                dcb_name="empagliflozina",
+                active_ingredient="empagliflozina",
+                dosage="25mg",
+                dosage_form="comprimido",
+                presentation="30 comprimidos",
+                ean_gtin="7891234567890",
+            )
+        ]
+        matcher = ProductMatcher(session)
+
+        decision = matcher.match_source_product(
+            {
+                "normalized_name": "empagliflozina 25mg",
+                "active_ingredient": "empagliflozina",
+                "dosage": "25mg",
+                "presentation": "comprimido",
+                "pack_size": None,
+                "ean_gtin": None,
+                "anvisa_code": None,
+            }
+        )
+
+        self.assertEqual(decision.match_type, "regulatory_anchor")
+        self.assertEqual(decision.review_status, "auto_approved")
+        self.assertEqual(decision.canonical_product, canonical)
+
+    def test_build_canonical_product_uses_regulatory_enrichment(self):
+        session = _FakeSession([])
+        session.regulatory_products = [
+            RegulatoryProduct(
+                id=1,
+                source_system="anvisa",
+                external_id="reg-2",
+                product_name="Cloridrato de Amoxicilina 500mg Capsula",
+                normalized_product_name="cloridrato de amoxicilina 500mg capsula",
+                dcb_name="amoxicilina",
+                active_ingredient="amoxicilina",
+                dosage="500mg",
+                dosage_form="capsula",
+                presentation="21 capsulas",
+                manufacturer="Laboratorio XPTO",
+                ean_gtin="7890000000001",
+                anvisa_code="123456789",
+            )
+        ]
+        matcher = ProductMatcher(session)
+
+        canonical = matcher.build_canonical_product(
+            {
+                "raw_name": "Amoxicilina 500mg",
+                "normalized_name": "amoxicilina 500mg",
+                "active_ingredient": "amoxicilina",
+                "dosage": "500mg",
+                "presentation": "capsula",
+                "pack_size": None,
+                "ean_gtin": None,
+                "anvisa_code": None,
+            }
+        )
+
+        self.assertEqual(canonical.canonical_name, "Cloridrato de Amoxicilina 500mg Capsula")
+        self.assertEqual(canonical.ean_gtin, "7890000000001")
+        self.assertEqual(canonical.anvisa_code, "123456789")
+        self.assertEqual(canonical.manufacturer, "Laboratorio XPTO")
 
     def test_score_canonical_match_supports_ean_and_partial_dosage(self):
         canonical = CanonicalProduct(

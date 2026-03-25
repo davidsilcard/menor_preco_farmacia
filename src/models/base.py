@@ -52,6 +52,80 @@ class CanonicalProduct(Base):
     matches = relationship("ProductMatch", back_populates="canonical_product")
 
 
+class RegulatoryProduct(Base):
+    __tablename__ = "regulatory_products"
+    __table_args__ = (
+        UniqueConstraint("source_system", "external_id", name="uq_regulatory_products_source_external"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    source_system = Column(String, nullable=False, default="anvisa", index=True)
+    external_id = Column(String, nullable=False)
+    product_name = Column(String, nullable=False)
+    normalized_product_name = Column(String, nullable=False, index=True)
+    dcb_name = Column(String, index=True)
+    active_ingredient = Column(String)
+    concentration = Column(String)
+    dosage = Column(String)
+    dosage_form = Column(String)
+    presentation = Column(String)
+    route = Column(String)
+    manufacturer = Column(String)
+    registration_holder = Column(String)
+    ean_gtin = Column(String, index=True)
+    anvisa_code = Column(String, index=True)
+    source_url = Column(String)
+    source_payload = Column(JSON)
+    last_imported_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class RegulatoryAlias(Base):
+    __tablename__ = "regulatory_aliases"
+    __table_args__ = (
+        UniqueConstraint("alias_type", "normalized_alias", name="uq_regulatory_aliases_type_alias"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    alias_type = Column(String, nullable=False, default="dcb", index=True)
+    dcb_name = Column(String, nullable=False, index=True)
+    alias = Column(String, nullable=False)
+    normalized_alias = Column(String, nullable=False, index=True)
+    source_system = Column(String, nullable=False, default="anvisa")
+    source_payload = Column(JSON)
+    last_imported_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class CmedPriceEntry(Base):
+    __tablename__ = "cmed_price_entries"
+    __table_args__ = (
+        UniqueConstraint("source_dataset", "row_fingerprint", name="uq_cmed_price_entries_dataset_fingerprint"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    source_dataset = Column(String, nullable=False, default="cmed", index=True)
+    row_fingerprint = Column(String, nullable=False)
+    product_name = Column(String, nullable=False)
+    normalized_product_name = Column(String, nullable=False, index=True)
+    presentation = Column(String)
+    laboratory = Column(String)
+    dcb_name = Column(String, index=True)
+    ean_gtin = Column(String, index=True)
+    anvisa_code = Column(String, index=True)
+    pmc_price = Column(Float)
+    pf_price = Column(Float)
+    list_price = Column(Float)
+    tax_rate = Column(String)
+    source_url = Column(String)
+    source_payload = Column(JSON)
+    last_imported_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class SourceProduct(Base):
     __tablename__ = "source_products"
     __table_args__ = (
