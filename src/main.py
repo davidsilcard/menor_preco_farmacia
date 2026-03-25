@@ -17,6 +17,7 @@ from src.api.ops_routes import router as ops_router
 from src.core.config import settings
 from src.core.logging import configure_logging
 from src.core.logging import get_logger, log_event
+from src.init_db import init_db as ensure_database_schema
 from src.models.base import CanonicalProduct, PriceSnapshot, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     build_latest_price_map,
@@ -48,6 +49,11 @@ app = FastAPI(title="Monitor de Precos Jaragua do Sul")
 app.include_router(catalog_router)
 app.include_router(ops_router)
 LOGGER = get_logger(__name__)
+
+
+@app.on_event("startup")
+def _ensure_database_schema_on_startup():
+    ensure_database_schema()
 
 
 def _validated_optional_cep(cep):
