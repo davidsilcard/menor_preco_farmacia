@@ -34,6 +34,7 @@ from src.services.catalog_queries import (
     validate_cep_context as _validate_cep_context,
 )
 from src.services.demand_tracking import (
+    catalog_request_payload as _catalog_request_payload,
     queue_metrics as _queue_metrics,
     register_catalog_request as _register_catalog_request,
     register_search_job as _register_search_job,
@@ -1195,6 +1196,7 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(first.id, second.id)
         self.assertEqual(second.request_count, 2)
         self.assertEqual(second.last_requested_by_tool, "compare_shopping_list")
+        self.assertIsNone(second.resolution_source)
 
     def test_tracked_item_status_changes_with_age(self):
         now = datetime.now(UTC).replace(tzinfo=None)
@@ -1316,6 +1318,24 @@ class ToolHelperTests(unittest.TestCase):
 
         self.assertIsNone(updated)
         self.assertIsNone(tracked_item.canonical_product_id)
+
+    def test_catalog_request_payload_includes_resolution_source(self):
+        request = CatalogRequest(
+            id=1,
+            query="dipirona",
+            normalized_query="dipirona",
+            cep="89254300",
+            status="fulfilled",
+            resolution_source="source_product_fallback",
+            request_count=2,
+            first_requested_at=datetime.now(UTC).replace(tzinfo=None),
+            last_requested_at=datetime.now(UTC).replace(tzinfo=None),
+            last_requested_by_tool="search_products",
+        )
+
+        payload = _catalog_request_payload(request)
+
+        self.assertEqual(payload["resolution_source"], "source_product_fallback")
 
     def test_scheduler_status_marks_old_item_inactive(self):
         self.assertEqual(

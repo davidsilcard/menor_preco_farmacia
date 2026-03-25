@@ -55,6 +55,7 @@ def catalog_request_payload(request: CatalogRequest | None):
         "normalized_query": request.normalized_query,
         "cep": request.cep,
         "status": request.status,
+        "resolution_source": request.resolution_source,
         "request_count": request.request_count,
         "first_requested_at": request.first_requested_at,
         "last_requested_at": request.last_requested_at,

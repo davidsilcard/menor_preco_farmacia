@@ -224,6 +224,7 @@ class CatalogRequest(Base):
     normalized_query = Column(String, nullable=False, index=True)
     cep = Column(String, nullable=False, index=True)
     status = Column(String, nullable=False, default="pending")
+    resolution_source = Column(String)
     request_count = Column(Integer, nullable=False, default=1)
     first_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)

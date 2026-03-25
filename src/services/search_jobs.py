@@ -149,8 +149,14 @@ def _complete_job(session, job: SearchJob, *, status: str, result_payload=None, 
             if status in {"completed", "partial_success"}:
                 has_results = bool((result_payload or {}).get("search_results", {}).get("results"))
                 catalog_request.status = "fulfilled" if has_results else "searched_no_results"
+                catalog_request.resolution_source = (
+                    (result_payload or {}).get("search_results", {}).get("result_origin")
+                    if has_results
+                    else "searched_no_results"
+                )
             elif status == "failed":
                 catalog_request.status = "failed"
+                catalog_request.resolution_source = "failed"
 
     session.commit()
     session.refresh(job)
