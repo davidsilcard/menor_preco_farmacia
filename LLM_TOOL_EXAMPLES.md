@@ -127,3 +127,28 @@
 - agradecer a sugestao
 - dizer que a farmacia foi registrada para avaliacao futura
 - nao prometer inclusao imediata
+
+## 7. Consulta de cobertura declarada
+
+### Request
+
+`POST /tool/coverage`
+
+```json
+{
+  "cep": "89254300"
+}
+```
+
+### Sinais esperados
+
+- `result.covered = true`
+- `result.region_count > 0`
+- `result.regions[0].city` preenchido
+- `result.next_action = "respond_now"`
+
+### Como a LLM deve responder
+
+- usar isso para explicar cobertura declarada
+- nao tratar isso como busca de preco
+- se faltar `cep`, pode usar `city` e `state` apenas como leitura de apoio

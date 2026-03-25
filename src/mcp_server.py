@@ -7,6 +7,7 @@ from src.models.base import SearchJob, SessionLocal
 from src.services.catalog_queries import normalize_cep
 from src.services.demand_tracking import search_job_payload
 from src.services.tool_models import (
+    CoverageLookupRequest,
     InvoiceComparisonRequest,
     ObservedItemRequest,
     PharmacyLeadRequest,
@@ -19,6 +20,7 @@ from src.services.tool_use import (
     compare_invoice_items_service,
     compare_receipt_service,
     compare_shopping_list_service,
+    get_coverage_service,
     list_review_matches_service,
     search_observed_item_service,
     search_products_service,
@@ -206,6 +208,18 @@ def _tool_definitions():
             },
         },
         {
+            "name": "get_coverage",
+            "description": "Consulta a cobertura declarada por CEP, cidade e estado sem executar busca de preco.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cep": {"type": "string"},
+                    "city": {"type": "string"},
+                    "state": {"type": "string"},
+                },
+            },
+        },
+        {
             "name": "submit_pharmacy_lead",
             "description": "Registra uma farmacia faltante sugerida pelo usuario para futura avaliacao de cobertura.",
             "inputSchema": {
@@ -319,6 +333,8 @@ def _call_tool(name: str, arguments: dict):
             if not job or job.cep != requested_cep:
                 raise ValueError("Search job nao encontrado")
             result = search_job_payload(job, session)
+        elif name == "get_coverage":
+            result = get_coverage_service(CoverageLookupRequest.model_validate(arguments), session)
         elif name == "submit_pharmacy_lead":
             result = submit_pharmacy_lead_service(PharmacyLeadRequest.model_validate(arguments), session)
         elif name == "list_search_jobs":

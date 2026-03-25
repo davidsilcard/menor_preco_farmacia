@@ -37,3 +37,9 @@ class PharmacyLeadRequest(BaseModel):
     state: str | None = None
     pharmacy_name: str | None = None
     notes: str | None = None
+
+
+class CoverageLookupRequest(BaseModel):
+    cep: str | None = None
+    city: str | None = None
+    state: str | None = None

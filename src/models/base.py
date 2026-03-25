@@ -147,6 +147,21 @@ class PharmacyLead(Base):
     last_suggested_by_tool = Column(String)
 
 
+class CoverageRegion(Base):
+    __tablename__ = "coverage_regions"
+
+    id = Column(Integer, primary_key=True)
+    city = Column(String, nullable=False, index=True)
+    state = Column(String, nullable=False, index=True)
+    cep_start = Column(String, nullable=False, index=True)
+    cep_end = Column(String, nullable=False, index=True)
+    priority = Column(Integer, nullable=False, default=100)
+    status = Column(String, nullable=False, default="active", index=True)
+    notes = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class SourceProduct(Base):
     __tablename__ = "source_products"
     __table_args__ = (

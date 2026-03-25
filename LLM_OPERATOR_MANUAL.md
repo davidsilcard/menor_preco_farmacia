@@ -20,6 +20,7 @@ Se o usuario ainda nao informou `cep`, a LLM deve pedir antes de chamar:
 - `search_observed_item`
 - `compare_canonical_product`
 - `get_search_job`
+- `get_coverage`
 
 Excecao:
 
@@ -48,6 +49,12 @@ Para sugestao de farmacia:
 - `result.lead`
 - `result.created`
 - `result.next_action`
+
+Para cobertura declarada:
+
+- `result.covered`
+- `result.regions`
+- `result.region_count`
 
 Em respostas de cesta/lista/nota tambem existem:
 
@@ -208,6 +215,22 @@ Regras:
 - nao usar isso no lugar da busca de preco
 - nao prometer integracao imediata
 - tratar como registro de interesse de cobertura futura
+
+## Quando usar `get_coverage`
+
+Use quando a conversa precisar validar cobertura declarada por regiao antes da busca.
+
+Exemplos:
+
+- o usuario informou cidade, mas ainda nao informou `cep`
+- a LLM quer confirmar se `Jaragua do Sul`, `Guaramirim` ou `Schroeder` ja estao declaradas na cobertura
+- a LLM quer responder com transparencia sobre regiao ativa vs planejada
+
+Regras:
+
+- `get_coverage` nao substitui `search_products`
+- para preco e oferta, a chave continua sendo `cep`
+- `cidade` e `estado` sao apoio de contexto, nao chave principal de consulta de mercado
 
 ## Como interpretar `offers`
 

@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
-from src.models.base import CanonicalProduct, PharmacyLead, ProductMatch, SourceProduct
+from src.models.base import CanonicalProduct, CoverageRegion, PharmacyLead, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     availability_rank,
     best_pricing_offer,
@@ -31,6 +31,7 @@ from src.services.operation_jobs import (
     operation_job_payload,
 )
 from src.services.tool_models import (
+    CoverageLookupRequest,
     InvoiceComparisonRequest,
     ObservedItemRequest,
     PharmacyLeadRequest,
@@ -290,6 +291,20 @@ def pharmacy_lead_payload(lead: PharmacyLead):
         "first_suggested_at": lead.first_suggested_at,
         "last_suggested_at": lead.last_suggested_at,
         "last_suggested_by_tool": lead.last_suggested_by_tool,
+    }
+
+
+def coverage_region_payload(region: CoverageRegion, *, requested_cep: str | None = None):
+    return {
+        "coverage_region_id": region.id,
+        "city": region.city,
+        "state": region.state,
+        "cep_start": region.cep_start,
+        "cep_end": region.cep_end,
+        "priority": region.priority,
+        "status": region.status,
+        "notes": region.notes,
+        "requested_cep": requested_cep,
     }
 
 
@@ -676,6 +691,47 @@ def submit_pharmacy_lead_service(payload: PharmacyLeadRequest, db: Session):
             "lead": pharmacy_lead_payload(lead),
         },
         1.0,
+        warnings,
+    )
+
+
+def get_coverage_service(payload: CoverageLookupRequest, db: Session):
+    normalized_cep = validate_cep_context(payload.cep) if payload.cep else None
+    city = (payload.city or "").strip().lower()
+    state = (payload.state or "").strip().upper()
+
+    query = db.query(CoverageRegion).order_by(CoverageRegion.priority.asc(), CoverageRegion.city.asc())
+    regions = query.all()
+    if city:
+        regions = [region for region in regions if (region.city or "").strip().lower() == city]
+    if state:
+        regions = [region for region in regions if (region.state or "").strip().upper() == state]
+
+    if normalized_cep:
+        regions = [
+            region
+            for region in regions
+            if (region.cep_start or "") <= normalized_cep <= (region.cep_end or "")
+        ]
+
+    warnings = []
+    if not normalized_cep:
+        warnings.append("Sem CEP, a leitura de cobertura fica menos precisa e funciona como contexto regional apenas.")
+
+    return tool_response(
+        "get_coverage",
+        payload.model_dump(),
+        {
+            "requested_cep": normalized_cep,
+            "requested_city": payload.city,
+            "requested_state": payload.state,
+            "covered": bool(regions),
+            "regions": [coverage_region_payload(region, requested_cep=normalized_cep) for region in regions],
+            "region_count": len(regions),
+            "next_action": "respond_now",
+            "next_action_reason": "A cobertura declarada foi consultada sem alterar o fluxo de busca por preco.",
+        },
+        1.0 if regions else 0.4,
         warnings,
     )
 

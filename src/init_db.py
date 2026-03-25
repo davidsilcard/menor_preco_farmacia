@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from src.core.logging import get_logger, log_event
-from src.models.base import Base, Pharmacy, engine
+from src.models.base import Base, CoverageRegion, Pharmacy, engine
 
 LOGGER = get_logger(__name__)
 
@@ -122,6 +122,35 @@ def init_db():
         {"name": "Drogaria Catarinense", "slug": "drogaria-catarinense", "website": "https://www.drogariacatarinense.com.br"},
         {"name": "Preco Popular", "slug": "preco-popular", "website": "https://www.precopopular.com.br"},
     ]
+    initial_coverage_regions = [
+        {
+            "city": "Jaragua do Sul",
+            "state": "SC",
+            "cep_start": "89250000",
+            "cep_end": "89269999",
+            "priority": 10,
+            "status": "active",
+            "notes": "Cobertura inicial principal da operacao.",
+        },
+        {
+            "city": "Guaramirim",
+            "state": "SC",
+            "cep_start": "89270000",
+            "cep_end": "89279999",
+            "priority": 20,
+            "status": "planned",
+            "notes": "Expansao declarada de cobertura para a mesma microrregiao.",
+        },
+        {
+            "city": "Schroeder",
+            "state": "SC",
+            "cep_start": "89275000",
+            "cep_end": "89279999",
+            "priority": 30,
+            "status": "planned",
+            "notes": "Expansao declarada complementar para a mesma microrregiao.",
+        },
+    ]
 
     with Session(engine) as session:
         for pharmacy_data in initial_pharmacies:
@@ -132,8 +161,32 @@ def init_db():
             else:
                 session.add(Pharmacy(**pharmacy_data))
 
+        for region_data in initial_coverage_regions:
+            region = (
+                session.query(CoverageRegion)
+                .filter_by(
+                    city=region_data["city"],
+                    state=region_data["state"],
+                    cep_start=region_data["cep_start"],
+                    cep_end=region_data["cep_end"],
+                )
+                .first()
+            )
+            if region:
+                region.priority = region_data["priority"]
+                region.status = region_data["status"]
+                region.notes = region_data["notes"]
+            else:
+                session.add(CoverageRegion(**region_data))
+
         session.commit()
-        log_event(LOGGER, 20, "database_init_completed", pharmacies_seeded=len(initial_pharmacies))
+        log_event(
+            LOGGER,
+            20,
+            "database_init_completed",
+            pharmacies_seeded=len(initial_pharmacies),
+            coverage_regions_seeded=len(initial_coverage_regions),
+        )
 
 
 if __name__ == "__main__":

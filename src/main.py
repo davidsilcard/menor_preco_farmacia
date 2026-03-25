@@ -30,6 +30,7 @@ from src.services.ops import ops_health_payload as _ops_health_payload
 from src.services.ops import pharmacy_metrics as _pharmacy_metrics
 from src.services.operation_jobs import process_next_operation_job
 from src.services.tool_models import (
+    CoverageLookupRequest,
     InvoiceComparisonRequest,
     ObservedItemRequest,
     PharmacyLeadRequest,
@@ -41,6 +42,7 @@ from src.services.tool_use import (
     compare_canonical_product_service,
     compare_invoice_items_service,
     compare_receipt_service,
+    get_coverage_service,
     compare_shopping_list_service,
     list_review_matches_service,
     search_observed_item_service,
@@ -172,6 +174,7 @@ def read_root():
             "/tool/compare-invoice-items",
             "/tool/compare-receipt",
             "/tool/search-observed-item",
+            "/tool/coverage",
             "/tool/submit-pharmacy-lead",
         ],
     }
@@ -437,6 +440,11 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
 @app.post("/tool/submit-pharmacy-lead")
 def tool_submit_pharmacy_lead(payload: PharmacyLeadRequest = Body(...), db: Session = Depends(get_db)):
     return submit_pharmacy_lead_service(payload, db)
+
+
+@app.post("/tool/coverage")
+def tool_get_coverage(payload: CoverageLookupRequest = Body(...), db: Session = Depends(get_db)):
+    return get_coverage_service(payload, db)
 
 
 if __name__ == "__main__":

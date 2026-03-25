@@ -11,7 +11,7 @@ from src.main import (
     list_source_products as _list_source_products,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import CatalogRequest, CmedPriceEntry, OperationJob, Pharmacy, PharmacyLead, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
+from src.models.base import CatalogRequest, CmedPriceEntry, CoverageRegion, OperationJob, Pharmacy, PharmacyLead, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.catalog_queries import (
     anchor_search_tokens,
@@ -74,6 +74,7 @@ from src.services.scheduled_collection import (
 )
 from src.services.matching import ProductMatcher
 from src.services.tool_models import ObservedItemRequest
+from src.services.tool_models import CoverageLookupRequest
 from src.services.tool_models import InvoiceComparisonRequest
 from src.services.tool_models import PharmacyLeadRequest
 from src.services.tool_models import ShoppingListRequest
@@ -88,6 +89,7 @@ from src.services.tool_use import (
     compare_invoice_items_service as _compare_invoice_items_service,
     compare_shopping_list_service as _compare_shopping_list_service,
     estimate_overall_confidence as _estimate_overall_confidence,
+    get_coverage_service as _get_coverage_service,
     item_availability_summary as _item_availability_summary,
     search_observed_item_service as _search_observed_item_service,
     search_products_service as _search_products_service,
@@ -170,6 +172,7 @@ class _FakeSession:
         self.regulatory_products = []
         self.regulatory_aliases = []
         self.cmed_price_entries = []
+        self.coverage_regions = []
         self.pharmacy_leads = []
         self.commits = 0
         self.closed = False
@@ -194,6 +197,8 @@ class _FakeSession:
             return _FakeQuery(self.regulatory_aliases)
         if model is CmedPriceEntry:
             return _FakeQuery(self.cmed_price_entries)
+        if model is CoverageRegion:
+            return _FakeQuery(self.coverage_regions)
         if model is PharmacyLead:
             return _FakeQuery(self.pharmacy_leads)
         if model is ScrapeRun:
@@ -252,6 +257,9 @@ class _FakeSession:
         if isinstance(instance, CmedPriceEntry):
             instance.id = instance.id or len(self.cmed_price_entries) + 1
             self.cmed_price_entries.append(instance)
+        if isinstance(instance, CoverageRegion):
+            instance.id = instance.id or len(self.coverage_regions) + 1
+            self.coverage_regions.append(instance)
         if isinstance(instance, PharmacyLead):
             instance.id = instance.id or len(self.pharmacy_leads) + 1
             self.pharmacy_leads.append(instance)
@@ -407,6 +415,7 @@ class ToolHelperTests(unittest.TestCase):
         tool_names = {tool["name"] for tool in _mcp_tool_definitions()}
         self.assertNotIn("list_review_matches", tool_names)
         self.assertNotIn("list_search_jobs", tool_names)
+        self.assertIn("get_coverage", tool_names)
         self.assertIn("submit_pharmacy_lead", tool_names)
         self.assertIn("get_search_job", tool_names)
 
@@ -1746,6 +1755,70 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["lead"]["pharmacy_lead_id"], 1)
         self.assertEqual(response["result"]["lead"]["suggestion_count"], 2)
         self.assertEqual(response["result"]["lead"]["suggested_city"], "Guaramirim")
+
+    def test_get_coverage_service_matches_region_by_cep(self):
+        session = _FakeSession([])
+        session.coverage_regions = [
+            CoverageRegion(
+                id=1,
+                city="Jaragua do Sul",
+                state="SC",
+                cep_start="89250000",
+                cep_end="89269999",
+                priority=10,
+                status="active",
+            ),
+            CoverageRegion(
+                id=2,
+                city="Guaramirim",
+                state="SC",
+                cep_start="89270000",
+                cep_end="89279999",
+                priority=20,
+                status="planned",
+            ),
+        ]
+
+        response = _get_coverage_service(
+            CoverageLookupRequest(cep="89254300"),
+            session,
+        )
+
+        self.assertTrue(response["result"]["covered"])
+        self.assertEqual(response["result"]["region_count"], 1)
+        self.assertEqual(response["result"]["regions"][0]["city"], "Jaragua do Sul")
+
+    def test_get_coverage_service_can_filter_by_city_without_cep(self):
+        session = _FakeSession([])
+        session.coverage_regions = [
+            CoverageRegion(
+                id=1,
+                city="Jaragua do Sul",
+                state="SC",
+                cep_start="89250000",
+                cep_end="89269999",
+                priority=10,
+                status="active",
+            ),
+            CoverageRegion(
+                id=2,
+                city="Guaramirim",
+                state="SC",
+                cep_start="89270000",
+                cep_end="89279999",
+                priority=20,
+                status="planned",
+            ),
+        ]
+
+        response = _get_coverage_service(
+            CoverageLookupRequest(city="Guaramirim", state="SC"),
+            session,
+        )
+
+        self.assertTrue(response["result"]["covered"])
+        self.assertEqual(response["result"]["regions"][0]["city"], "Guaramirim")
+        self.assertIn("Sem CEP", " ".join(response["warnings"]))
 
     def test_search_products_service_exposes_canonical_resolution_source(self):
         session = _FakeSession([])

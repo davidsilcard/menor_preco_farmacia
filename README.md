@@ -58,6 +58,7 @@ Por padrao, a LLM de atendimento deve enxergar apenas tools orientadas a respond
 - `search_observed_item`
 - `compare_canonical_product`
 - `get_search_job`
+- `get_coverage`
 - `submit_pharmacy_lead`
 
 Tools administrativas nao devem ser expostas por default no MCP.
@@ -85,6 +86,14 @@ Regras:
 - `cidade` e `estado` sao contexto de apoio para expansao
 - a sugestao de farmacia nao altera o resultado atual da busca
 - a sugestao deve ser tratada como sinal de cobertura futura, nao como garantia de integracao
+
+Para consultar cobertura declarada sem executar busca de preco, a LLM pode usar `get_coverage`.
+
+Uso esperado:
+
+- validar se um `cep` cai em uma regiao declarada
+- consultar cidades e estados planejados/ativos
+- apoiar a conversa quando o usuario informar cidade antes de informar o `cep`
 
 Manual operacional da LLM:
 
