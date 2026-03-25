@@ -21,6 +21,10 @@ Se o usuario ainda nao informou `cep`, a LLM deve pedir antes de chamar:
 - `compare_canonical_product`
 - `get_search_job`
 
+Excecao:
+
+- `submit_pharmacy_lead` pode ser usado sem `cep`, mas `cep`, `cidade` e `estado` continuam sendo sinais uteis para expansao futura.
+
 ## Leitura correta das respostas
 
 Os campos principais ficam em `result`.
@@ -38,6 +42,12 @@ Campos importantes:
 - `result.search_job`
 - `result.operation_job`
 - `result.tracked_item`
+
+Para sugestao de farmacia:
+
+- `result.lead`
+- `result.created`
+- `result.next_action`
 
 Em respostas de cesta/lista/nota tambem existem:
 
@@ -173,11 +183,31 @@ Valores esperados:
   - a busca foi enfileirada e a LLM deve consultar `get_search_job`
 - `ask_user_to_refine`
   - faltam detalhes suficientes para resposta util imediata
+- `thank_user`
+  - a sugestao de farmacia faltante foi registrada com sucesso
 
 Se `results` vier vazio:
 
 - com `queued_enrichment`: o sistema abriu fila
 - com `searched_no_results`: a busca ja terminou sem resultado
+
+## Quando usar `submit_pharmacy_lead`
+
+Use quando o usuario indicar que sente falta de uma farmacia da propria regiao.
+
+Entrada recomendada:
+
+- `website_url`
+- `cep` se o usuario souber
+- `city` e `state` quando disponiveis
+- `pharmacy_name` opcional
+- `notes` opcional
+
+Regras:
+
+- nao usar isso no lugar da busca de preco
+- nao prometer integracao imediata
+- tratar como registro de interesse de cobertura futura
 
 ## Como interpretar `offers`
 

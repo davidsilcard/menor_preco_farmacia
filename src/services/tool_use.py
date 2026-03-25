@@ -1,9 +1,11 @@
 import re
+from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
-from src.models.base import CanonicalProduct, ProductMatch, SourceProduct
+from src.models.base import CanonicalProduct, PharmacyLead, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     availability_rank,
     best_pricing_offer,
@@ -31,6 +33,7 @@ from src.services.operation_jobs import (
 from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
+    PharmacyLeadRequest,
     ReceiptComparisonRequest,
     ShoppingListRequest,
 )
@@ -250,11 +253,44 @@ def flattened_tool_ref_lists(*, catalog_requests=None, search_jobs=None, operati
     }
 
 
+def normalize_website_url(url: str):
+    value = (url or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="website_url e obrigatoria.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urlparse(value)
+    domain = (parsed.netloc or parsed.path or "").strip().lower()
+    domain = domain.removeprefix("www.")
+    if not domain or "." not in domain:
+        raise HTTPException(status_code=400, detail="website_url invalida para sugestao de farmacia.")
+    normalized_url = f"{parsed.scheme or 'https'}://{domain}{parsed.path if parsed.netloc else ''}".rstrip("/")
+    return normalized_url, domain
+
+
 def normalize_match_mode(match_mode: str | None):
     normalized = (match_mode or "broad").strip().lower()
     if normalized not in {"broad", "strict"}:
         raise HTTPException(status_code=400, detail="match_mode invalido; use 'broad' ou 'strict'.")
     return normalized
+
+
+def pharmacy_lead_payload(lead: PharmacyLead):
+    return {
+        "pharmacy_lead_id": lead.id,
+        "pharmacy_name": lead.pharmacy_name,
+        "website_url": lead.website_url,
+        "normalized_domain": lead.normalized_domain,
+        "suggested_cep": lead.suggested_cep,
+        "suggested_city": lead.suggested_city,
+        "suggested_state": lead.suggested_state,
+        "notes": lead.notes,
+        "status": lead.status,
+        "suggestion_count": lead.suggestion_count,
+        "first_suggested_at": lead.first_suggested_at,
+        "last_suggested_at": lead.last_suggested_at,
+        "last_suggested_by_tool": lead.last_suggested_by_tool,
+    }
 
 
 def requested_strength_tokens(query: str):
@@ -578,6 +614,68 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
             "tracked_item": tracked_item_result,
         },
         confidence,
+        warnings,
+    )
+
+
+def submit_pharmacy_lead_service(payload: PharmacyLeadRequest, db: Session):
+    normalized_url, normalized_domain = normalize_website_url(payload.website_url)
+    normalized_cep = validate_cep_context(payload.cep) if payload.cep else None
+    now = datetime.now(UTC).replace(tzinfo=None)
+    lead = db.query(PharmacyLead).filter(PharmacyLead.normalized_domain == normalized_domain).first()
+
+    created = False
+    if not lead:
+        lead = PharmacyLead(
+            pharmacy_name=(payload.pharmacy_name or "").strip() or None,
+            website_url=normalized_url,
+            normalized_domain=normalized_domain,
+            suggested_cep=normalized_cep,
+            suggested_city=(payload.city or "").strip() or None,
+            suggested_state=((payload.state or "").strip().upper() or None),
+            notes=(payload.notes or "").strip() or None,
+            status="new",
+            suggestion_count=1,
+            first_suggested_at=now,
+            last_suggested_at=now,
+            last_suggested_by_tool="submit_pharmacy_lead",
+        )
+        db.add(lead)
+        created = True
+    else:
+        lead.website_url = normalized_url
+        lead.pharmacy_name = lead.pharmacy_name or ((payload.pharmacy_name or "").strip() or None)
+        lead.suggested_cep = normalized_cep or lead.suggested_cep
+        lead.suggested_city = (payload.city or "").strip() or lead.suggested_city
+        lead.suggested_state = ((payload.state or "").strip().upper() or lead.suggested_state)
+        lead.notes = (payload.notes or "").strip() or lead.notes
+        lead.suggestion_count = int(lead.suggestion_count or 0) + 1
+        lead.last_suggested_at = now
+        lead.last_suggested_by_tool = "submit_pharmacy_lead"
+        if lead.status in {None, ""}:
+            lead.status = "new"
+
+    db.commit()
+    db.refresh(lead)
+
+    next_action = "thank_user"
+    next_action_reason = "A farmacia foi registrada como sugestao de cobertura futura e nao altera a busca atual."
+    warnings = []
+    if not normalized_cep:
+        warnings.append("A sugestao foi registrada sem CEP; isso reduz a precisao regional do sinal.")
+    if not payload.city:
+        warnings.append("A sugestao foi registrada sem cidade; cidade continua sendo um contexto util de apoio.")
+
+    return tool_response(
+        "submit_pharmacy_lead",
+        payload.model_dump(),
+        {
+            "created": created,
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
+            "lead": pharmacy_lead_payload(lead),
+        },
+        1.0,
         warnings,
     )
 

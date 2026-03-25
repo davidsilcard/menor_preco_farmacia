@@ -28,3 +28,12 @@ class ObservedItemRequest(BaseModel):
     cep: str
     observations: list[str] = Field(default_factory=list)
     source_type: str = "free_text"
+
+
+class PharmacyLeadRequest(BaseModel):
+    website_url: str
+    cep: str | None = None
+    city: str | None = None
+    state: str | None = None
+    pharmacy_name: str | None = None
+    notes: str | None = None

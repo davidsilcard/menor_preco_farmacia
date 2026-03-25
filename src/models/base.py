@@ -126,6 +126,27 @@ class CmedPriceEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class PharmacyLead(Base):
+    __tablename__ = "pharmacy_leads"
+    __table_args__ = (
+        UniqueConstraint("normalized_domain", name="uq_pharmacy_leads_normalized_domain"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    pharmacy_name = Column(String)
+    website_url = Column(String, nullable=False)
+    normalized_domain = Column(String, nullable=False, index=True)
+    suggested_cep = Column(String, index=True)
+    suggested_city = Column(String)
+    suggested_state = Column(String)
+    notes = Column(String)
+    status = Column(String, nullable=False, default="new", index=True)
+    suggestion_count = Column(Integer, nullable=False, default=1)
+    first_suggested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_suggested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_suggested_by_tool = Column(String)
+
+
 class SourceProduct(Base):
     __tablename__ = "source_products"
     __table_args__ = (

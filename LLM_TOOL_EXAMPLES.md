@@ -97,3 +97,33 @@
 - `requested_cep` e o escopo real da consulta
 - `configured_default_cep` e apenas o CEP padrao da aplicacao
 - isso nao significa que o sistema ignorou o CEP informado
+
+## 6. Sugestao de farmacia faltante
+
+### Request
+
+`POST /tool/submit-pharmacy-lead`
+
+```json
+{
+  "website_url": "https://www.farmaciaexemplo.com.br",
+  "cep": "89254300",
+  "city": "Jaragua do Sul",
+  "state": "SC",
+  "pharmacy_name": "Farmacia Exemplo",
+  "notes": "Cliente sente falta dessa farmacia na regiao."
+}
+```
+
+### Sinais esperados
+
+- `result.created = true` ou `false`
+- `result.next_action = "thank_user"`
+- `result.lead.normalized_domain` preenchido
+- `result.lead.status = "new"` por padrao
+
+### Como a LLM deve responder
+
+- agradecer a sugestao
+- dizer que a farmacia foi registrada para avaliacao futura
+- nao prometer inclusao imediata

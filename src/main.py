@@ -32,6 +32,7 @@ from src.services.operation_jobs import process_next_operation_job
 from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
+    PharmacyLeadRequest,
     ReceiptComparisonRequest,
     ShoppingListRequest,
 )
@@ -44,6 +45,7 @@ from src.services.tool_use import (
     list_review_matches_service,
     search_observed_item_service,
     search_products_service,
+    submit_pharmacy_lead_service,
 )
 
 configure_logging()
@@ -170,6 +172,7 @@ def read_root():
             "/tool/compare-invoice-items",
             "/tool/compare-receipt",
             "/tool/search-observed-item",
+            "/tool/submit-pharmacy-lead",
         ],
     }
 
@@ -429,6 +432,11 @@ def tool_compare_receipt(payload: ReceiptComparisonRequest = Body(...), db: Sess
 @app.post("/tool/search-observed-item")
 def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Session = Depends(get_db)):
     return search_observed_item_service(payload, db)
+
+
+@app.post("/tool/submit-pharmacy-lead")
+def tool_submit_pharmacy_lead(payload: PharmacyLeadRequest = Body(...), db: Session = Depends(get_db)):
+    return submit_pharmacy_lead_service(payload, db)
 
 
 if __name__ == "__main__":

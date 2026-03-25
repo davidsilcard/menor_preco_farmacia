@@ -42,6 +42,7 @@ Ela deve:
 - normalizar produtos
 - associar produtos equivalentes entre farmacias
 - expor consultas objetivas para comparacao
+- registrar sugestoes de farmacias faltantes para futura expansao de cobertura
 
 ## MCP: atendimento vs operacao
 
@@ -57,6 +58,7 @@ Por padrao, a LLM de atendimento deve enxergar apenas tools orientadas a respond
 - `search_observed_item`
 - `compare_canonical_product`
 - `get_search_job`
+- `submit_pharmacy_lead`
 
 Tools administrativas nao devem ser expostas por default no MCP.
 
@@ -72,6 +74,17 @@ Regra pratica:
 - MCP de atendimento: tools minimas, seguras e orientadas a resposta final da LLM
 - API HTTP operacional: endpoints de monitoramento, fila, health e revisao
 - MCP administrativo: opcional, controlado por flag
+
+## Expansao de cobertura
+
+Quando o usuario sentir falta de uma farmacia da propria regiao, a LLM pode registrar uma sugestao via `submit_pharmacy_lead`.
+
+Regras:
+
+- `cep` continua sendo a chave principal para preco e disponibilidade
+- `cidade` e `estado` sao contexto de apoio para expansao
+- a sugestao de farmacia nao altera o resultado atual da busca
+- a sugestao deve ser tratada como sinal de cobertura futura, nao como garantia de integracao
 
 Manual operacional da LLM:
 

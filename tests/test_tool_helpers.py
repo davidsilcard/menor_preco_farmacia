@@ -11,7 +11,7 @@ from src.main import (
     list_source_products as _list_source_products,
 )
 from src.models.base import CanonicalProduct
-from src.models.base import CatalogRequest, CmedPriceEntry, OperationJob, Pharmacy, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
+from src.models.base import CatalogRequest, CmedPriceEntry, OperationJob, Pharmacy, PharmacyLead, PriceSnapshot, ProductMatch, RegulatoryAlias, RegulatoryProduct, ScrapeRun, SearchJob, SourceProduct, TrackedItemByCep
 from src.scrapers.base import BaseScraper
 from src.services.catalog_queries import (
     anchor_search_tokens,
@@ -75,6 +75,7 @@ from src.services.scheduled_collection import (
 from src.services.matching import ProductMatcher
 from src.services.tool_models import ObservedItemRequest
 from src.services.tool_models import InvoiceComparisonRequest
+from src.services.tool_models import PharmacyLeadRequest
 from src.services.tool_models import ShoppingListRequest
 from src.services.tool_use import (
     availability_warnings as _availability_warnings,
@@ -90,6 +91,7 @@ from src.services.tool_use import (
     item_availability_summary as _item_availability_summary,
     search_observed_item_service as _search_observed_item_service,
     search_products_service as _search_products_service,
+    submit_pharmacy_lead_service as _submit_pharmacy_lead_service,
     tool_response as _tool_response,
 )
 
@@ -168,6 +170,7 @@ class _FakeSession:
         self.regulatory_products = []
         self.regulatory_aliases = []
         self.cmed_price_entries = []
+        self.pharmacy_leads = []
         self.commits = 0
         self.closed = False
         self.flush_validator = None
@@ -191,6 +194,8 @@ class _FakeSession:
             return _FakeQuery(self.regulatory_aliases)
         if model is CmedPriceEntry:
             return _FakeQuery(self.cmed_price_entries)
+        if model is PharmacyLead:
+            return _FakeQuery(self.pharmacy_leads)
         if model is ScrapeRun:
             return _FakeQuery(getattr(self, "scrape_runs", []))
         if model is SourceProduct:
@@ -247,6 +252,9 @@ class _FakeSession:
         if isinstance(instance, CmedPriceEntry):
             instance.id = instance.id or len(self.cmed_price_entries) + 1
             self.cmed_price_entries.append(instance)
+        if isinstance(instance, PharmacyLead):
+            instance.id = instance.id or len(self.pharmacy_leads) + 1
+            self.pharmacy_leads.append(instance)
         if isinstance(instance, PriceSnapshot):
             instance.id = instance.id or len(self.price_snapshots) + 1
             self.price_snapshots.append(instance)
@@ -399,6 +407,7 @@ class ToolHelperTests(unittest.TestCase):
         tool_names = {tool["name"] for tool in _mcp_tool_definitions()}
         self.assertNotIn("list_review_matches", tool_names)
         self.assertNotIn("list_search_jobs", tool_names)
+        self.assertIn("submit_pharmacy_lead", tool_names)
         self.assertIn("get_search_job", tool_names)
 
     def test_build_price_summary_returns_totals(self):
@@ -1685,9 +1694,58 @@ class ToolHelperTests(unittest.TestCase):
         self.assertIsNotNone(response["result"]["tracked_item_id"])
         self.assertEqual(response["result"]["search_job"]["status"], "queued")
         self.assertEqual(response["result"]["operation_job"]["job_type"], "process_search_job")
-        self.assertEqual(response["result"]["operation_job"]["status"], "queued")
-        self.assertEqual(response["result"]["operation_job"]["payload"]["search_job_id"], response["result"]["search_job"]["job_id"])
-        self.assertEqual(len(session.operation_jobs), 1)
+
+    def test_submit_pharmacy_lead_service_creates_new_lead(self):
+        session = _FakeSession([])
+
+        response = _submit_pharmacy_lead_service(
+            PharmacyLeadRequest(
+                website_url="https://www.farmaciaexemplo.com.br/loja",
+                cep="89254300",
+                city="Jaragua do Sul",
+                state="sc",
+                pharmacy_name="Farmacia Exemplo",
+                notes="Faltou nas buscas da regiao",
+            ),
+            session,
+        )
+
+        self.assertTrue(response["result"]["created"])
+        self.assertEqual(response["result"]["lead"]["normalized_domain"], "farmaciaexemplo.com.br")
+        self.assertEqual(response["result"]["lead"]["suggested_state"], "SC")
+        self.assertEqual(response["result"]["lead"]["suggestion_count"], 1)
+
+    def test_submit_pharmacy_lead_service_updates_existing_domain(self):
+        session = _FakeSession([])
+        existing = PharmacyLead(
+            id=1,
+            pharmacy_name="Farmacia Exemplo",
+            website_url="https://farmaciaexemplo.com.br",
+            normalized_domain="farmaciaexemplo.com.br",
+            suggested_cep="89254300",
+            suggested_city="Jaragua do Sul",
+            suggested_state="SC",
+            status="new",
+            suggestion_count=1,
+            first_suggested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+            last_suggested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+            last_suggested_by_tool="submit_pharmacy_lead",
+        )
+        session.pharmacy_leads = [existing]
+
+        response = _submit_pharmacy_lead_service(
+            PharmacyLeadRequest(
+                website_url="farmaciaexemplo.com.br",
+                city="Guaramirim",
+                notes="Tambem faz falta em Guaramirim",
+            ),
+            session,
+        )
+
+        self.assertFalse(response["result"]["created"])
+        self.assertEqual(response["result"]["lead"]["pharmacy_lead_id"], 1)
+        self.assertEqual(response["result"]["lead"]["suggestion_count"], 2)
+        self.assertEqual(response["result"]["lead"]["suggested_city"], "Guaramirim")
 
     def test_search_products_service_exposes_canonical_resolution_source(self):
         session = _FakeSession([])

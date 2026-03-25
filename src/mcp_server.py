@@ -9,6 +9,7 @@ from src.services.demand_tracking import search_job_payload
 from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
+    PharmacyLeadRequest,
     ReceiptComparisonRequest,
     ShoppingListRequest,
 )
@@ -21,6 +22,7 @@ from src.services.tool_use import (
     list_review_matches_service,
     search_observed_item_service,
     search_products_service,
+    submit_pharmacy_lead_service,
 )
 
 SERVER_NAME = "super-melhor-preco-farmacia"
@@ -203,6 +205,22 @@ def _tool_definitions():
                 "required": ["job_id", "cep"],
             },
         },
+        {
+            "name": "submit_pharmacy_lead",
+            "description": "Registra uma farmacia faltante sugerida pelo usuario para futura avaliacao de cobertura.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "website_url": {"type": "string"},
+                    "cep": {"type": "string"},
+                    "city": {"type": "string"},
+                    "state": {"type": "string"},
+                    "pharmacy_name": {"type": "string"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["website_url"],
+            },
+        },
     ]
 
     if _admin_tools_enabled():
@@ -301,6 +319,8 @@ def _call_tool(name: str, arguments: dict):
             if not job or job.cep != requested_cep:
                 raise ValueError("Search job nao encontrado")
             result = search_job_payload(job, session)
+        elif name == "submit_pharmacy_lead":
+            result = submit_pharmacy_lead_service(PharmacyLeadRequest.model_validate(arguments), session)
         elif name == "list_search_jobs":
             if not _admin_tools_enabled():
                 raise ValueError("Tool desabilitada no MCP atual: list_search_jobs")
