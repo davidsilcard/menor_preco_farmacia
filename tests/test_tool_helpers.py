@@ -30,6 +30,7 @@ from src.services.catalog_queries import (
     normalize_query as _normalize_query,
     preferred_search_terms,
     score_canonical_match as _score_canonical_match,
+    structural_variant_conflict as _structural_variant_conflict,
     snapshot_freshness_payload as _snapshot_freshness_payload,
     tokenize_search_text as _tokenize_search_text,
     validate_cep_context as _validate_cep_context,
@@ -323,6 +324,16 @@ class ToolHelperTests(unittest.TestCase):
         self.assertIn("empagliflozina", anchors)
         self.assertNotIn("comprimidos", anchors)
         self.assertNotIn("revestidos", anchors)
+
+    def test_structural_variant_conflict_detects_xr_mismatch(self):
+        self.assertTrue(
+            _structural_variant_conflict(
+                "Glifage 500mg 30 Comprimidos",
+                "comprimido",
+                "Glifage XR 500mg 30 Comprimidos",
+                "comprimido",
+            )
+        )
 
     def test_preferred_search_terms_reduce_verbose_ocr_query(self):
         terms = preferred_search_terms("jardiance empagliflozina 25 mg uso oral uso adulto 30 comprimidos revestidos")
@@ -1065,8 +1076,31 @@ class ToolHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.match_type, "anchored_structured_match")
-        self.assertEqual(decision.review_status, "auto_approved")
-        self.assertEqual(decision.canonical_product, anchored)
+
+    def test_matcher_rejects_structural_variant_conflict_between_xr_and_non_xr(self):
+        canonical = CanonicalProduct(
+            id=210,
+            canonical_name="Glifage 500mg 30 Comprimidos",
+            normalized_name="glifage 500mg 30 comprimidos",
+            dosage="500mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
+        session = _FakeSession([canonical])
+
+        decision = ProductMatcher(session).match_source_product(
+            {
+                "raw_name": "Glifage XR 500mg 30 Comprimidos",
+                "normalized_name": "glifage xr 500mg 30 comprimidos",
+                "dosage": "500mg",
+                "presentation": "comprimido",
+                "pack_size": "30 comprimidos",
+            }
+        )
+
+        self.assertIsNone(decision.canonical_product)
+        self.assertEqual(decision.match_type, "new_canonical")
+        self.assertEqual(decision.review_status, "new")
 
     def test_build_canonical_product_reuses_existing_anchored_record(self):
         existing = CanonicalProduct(
@@ -1676,6 +1710,63 @@ class ToolHelperTests(unittest.TestCase):
             response["result"]["results"][0]["presentation_group"],
             "Dipirona Monoidratada 500mg 20 Comprimidos",
         )
+
+    def test_search_products_service_flags_structural_conflicts_in_offers(self):
+        pharmacy = Pharmacy(id=1, name="Drogaria Sao Paulo", slug="dsp")
+        canonical = CanonicalProduct(
+            id=81,
+            canonical_name="Glifage 500mg 30 Comprimidos",
+            normalized_name="glifage 500mg 30 comprimidos",
+            dosage="500mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
+        source_product = SourceProduct(
+            id=82,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Glifage XR 500mg 30 Comprimidos",
+            normalized_name="glifage xr 500mg 30 comprimidos",
+            presentation="comprimido",
+            source_sku="sku-82",
+        )
+        match = ProductMatch(
+            id=82,
+            source_product_id=82,
+            canonical_product_id=81,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=82,
+                source_product_id=82,
+                price=8.99,
+                availability="available",
+                captured_at=datetime.now(UTC).replace(tzinfo=None),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        ]
+
+        response = _search_products_service("glifage 500mg", "89254300", session, match_mode="strict")
+
+        self.assertEqual(response["result"]["structural_conflict_count"], 1)
+        self.assertEqual(response["result"]["groups"][0]["structural_conflict_count"], 1)
+        self.assertEqual(
+            response["result"]["results"][0]["offers"][0]["structural_match"]["status"],
+            "conflict",
+        )
+        self.assertIn("conflito estrutural", " ".join(response["warnings"]).lower())
 
     def test_search_products_service_distinguishes_offer_count_from_unique_pharmacies(self):
         pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")

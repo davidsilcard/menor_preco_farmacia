@@ -92,6 +92,11 @@ NON_ANCHOR_TOKENS = {
     "ampola",
 }
 
+STRUCTURAL_VARIANT_TOKENS = {
+    "xr": [" xr ", " xr", "xr ", "liberacao prolongada", "prolongada", "extended release"],
+    "dragea": [" dragea", " drageas"],
+}
+
 
 def normalize_cep(value: str) -> str:
     return re.sub(r"\D", "", value or "")
@@ -391,6 +396,39 @@ def has_special_token_conflict(query: str, candidate: str):
     return False
 
 
+def structural_variant_tokens(*values: str | None):
+    normalized = f" {' '.join(filter(None, [normalize_query(value) for value in values]))} "
+    if not normalized.strip():
+        return set()
+    variants = set()
+    for label, fragments in STRUCTURAL_VARIANT_TOKENS.items():
+        if any(fragment in normalized for fragment in fragments):
+            variants.add(label)
+    return variants
+
+
+def structural_variant_conflict(canonical_name: str | None, canonical_presentation: str | None, source_name: str | None, source_presentation: str | None):
+    canonical_variants = structural_variant_tokens(canonical_name, canonical_presentation)
+    source_variants = structural_variant_tokens(source_name, source_presentation)
+    return canonical_variants != source_variants and bool(canonical_variants or source_variants)
+
+
+def structural_match_payload(canonical_product: CanonicalProduct, source_product: SourceProduct):
+    conflict = structural_variant_conflict(
+        canonical_product.canonical_name,
+        canonical_product.presentation,
+        source_product.raw_name,
+        source_product.presentation,
+    )
+    canonical_variants = sorted(structural_variant_tokens(canonical_product.canonical_name, canonical_product.presentation))
+    source_variants = sorted(structural_variant_tokens(source_product.raw_name, source_product.presentation))
+    return {
+        "status": "conflict" if conflict else "aligned",
+        "canonical_variants": canonical_variants,
+        "source_variants": source_variants,
+    }
+
+
 def availability_rank(availability: str | None):
     if availability == "available":
         return 0
@@ -406,6 +444,7 @@ def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: 
         latest_snapshot = latest_prices.get(source_product.id)
         if not latest_snapshot:
             continue
+        structural_match = structural_match_payload(canonical_product, source_product)
         offers.append(
             {
                 "source_product_id": source_product.id,
@@ -425,6 +464,7 @@ def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: 
                 "match_confidence": match.confidence,
                 "review_status": match.review_status,
                 "review_notes": match.review_notes,
+                "structural_match": structural_match,
                 "price_validation": price_validation_payload(
                     latest_snapshot.price,
                     cmed_reference_for_product(source_product, cmed_reference_map),

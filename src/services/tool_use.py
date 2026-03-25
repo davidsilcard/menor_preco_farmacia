@@ -93,6 +93,15 @@ def results_with_offers_count(results: list[dict]):
     return sum(1 for result in results if result.get("offers"))
 
 
+def structural_conflict_count(results: list[dict]):
+    return sum(
+        1
+        for result in results
+        for offer in (result.get("offers") or [])
+        if (offer.get("structural_match") or {}).get("status") == "conflict"
+    )
+
+
 def canonical_display_name(canonical_product: CanonicalProduct):
     parts = [canonical_product.canonical_name]
     normalized_name = normalize_query(canonical_product.canonical_name)
@@ -135,11 +144,15 @@ def grouped_results(results: list[dict]):
                 "offers_count": 0,
                 "unique_pharmacies": set(),
                 "best_offer": None,
+                "structural_conflict_count": 0,
             },
         )
         group["items"].append(result)
         group["results_count"] += 1
         group["offers_count"] += len(result.get("offers") or [])
+        group["structural_conflict_count"] += sum(
+            1 for offer in (result.get("offers") or []) if (offer.get("structural_match") or {}).get("status") == "conflict"
+        )
         for offer in result.get("offers") or []:
             if offer.get("pharmacy"):
                 group["unique_pharmacies"].add(offer["pharmacy"])
@@ -161,6 +174,7 @@ def grouped_results(results: list[dict]):
                 "offers_count": group["offers_count"],
                 "unique_pharmacies_count": len(group["unique_pharmacies"]),
                 "unique_pharmacies": sorted(group["unique_pharmacies"]),
+                "structural_conflict_count": group["structural_conflict_count"],
                 "best_offer": group["best_offer"],
                 "items": group["items"],
             }
@@ -472,6 +486,8 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
         warnings.append("Modo estrito removeu variacoes com dosagem diferente da solicitada.")
     if results and confidence < 0.5:
         warnings.append("Match encontrado com baixa confianca; revisar item e ofertas.")
+    if structural_conflict_count(results):
+        warnings.append("Algumas ofertas possuem conflito estrutural com o canonical; revisar variante e apresentacao.")
     if results:
         canonical_product = matches[0][1]
         tracked_item = register_tracked_item(
@@ -519,6 +535,7 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
             "results_count": len(results),
             "offers_count": results_offer_count(results),
             "results_with_offers_count": results_with_offers_count(results),
+            "structural_conflict_count": structural_conflict_count(results),
             "unique_pharmacies_count": len(unique_pharmacies(results)),
             "unique_pharmacies": unique_pharmacies(results),
             "groups": grouped_payload,

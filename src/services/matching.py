@@ -268,6 +268,13 @@ class ProductMatcher:
         for candidate in self.session.query(CanonicalProduct).all():
             if not self._name_compatible(candidate.normalized_name, normalized_name):
                 continue
+            if self._has_structural_variant_conflict(
+                candidate_name=candidate.canonical_name or candidate.normalized_name,
+                candidate_presentation=candidate.presentation,
+                source_name=normalized_name,
+                source_presentation=presentation,
+            ):
+                continue
             if self._normalized(candidate.pack_size) != self._normalized(pack_size):
                 continue
             if not self._presentation_compatible(candidate.presentation, presentation):
@@ -321,6 +328,13 @@ class ProductMatcher:
         return candidate_norm == source_norm
 
     def _presentation_compatible(self, candidate, source):
+        if self._has_structural_variant_conflict(
+            candidate_name=candidate,
+            candidate_presentation=candidate,
+            source_name=source,
+            source_presentation=source,
+        ):
+            return False
         candidate_norm = self._presentation_key(candidate)
         source_norm = self._presentation_key(source)
         if not candidate_norm or not source_norm:
@@ -423,3 +437,21 @@ class ProductMatcher:
             "framboesa",
         }
         return {token for token in raw_tokens if token not in stopwords}
+
+    @classmethod
+    def _structural_variant_tokens(cls, *values):
+        normalized = " ".join(filter(None, [cls._normalized(value) for value in values]))
+        if not normalized:
+            return set()
+        variants = set()
+        if any(token in normalized for token in [" xr ", " xr", "xr ", "liberacao prolongada", "prolongada", "extended release"]):
+            variants.add("xr")
+        if " dragea" in normalized or " drageas" in normalized:
+            variants.add("dragea")
+        return variants
+
+    @classmethod
+    def _has_structural_variant_conflict(cls, *, candidate_name, candidate_presentation, source_name, source_presentation):
+        candidate_variants = cls._structural_variant_tokens(candidate_name, candidate_presentation)
+        source_variants = cls._structural_variant_tokens(source_name, source_presentation)
+        return candidate_variants != source_variants and bool(candidate_variants or source_variants)
