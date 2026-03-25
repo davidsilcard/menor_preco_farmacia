@@ -279,12 +279,16 @@ Para reduzir ruido durante testes locais:
 
 - `UVICORN_ACCESS_LOG=false`: oculta os logs de access do Uvicorn
 - `LOG_OPERATION_JOB_REUSED=false`: evita repetir eventos de reuse de fila em nivel `INFO`
+- `EMBED_OPERATION_WORKER=true`: sobe um worker continuo junto com `uv run python -m src.main`
+- `EMBED_OPERATION_WORKER_POLL_SECONDS=5`: intervalo maximo de espera quando a fila estiver vazia
 
 Exemplo de uso no `.env`:
 
 ```env
 UVICORN_ACCESS_LOG=false
 LOG_OPERATION_JOB_REUSED=false
+EMBED_OPERATION_WORKER=true
+EMBED_OPERATION_WORKER_POLL_SECONDS=5
 ```
 
 Subida local:
@@ -292,6 +296,16 @@ Subida local:
 ```bash
 uv run python -m src.main
 ```
+
+Quando a API sobe por esse comando, o worker embarcado tambem sobe no mesmo processo e drena `operation_jobs` continuamente. Para desligar esse comportamento, use `EMBED_OPERATION_WORKER=false`.
+
+Ponto de atencao:
+
+- o worker embarcado e uma escolha pragmatica para desenvolvimento local, homologacao e operacao simples
+- em producao maior, o ideal e desacoplar esse worker da API HTTP
+- nesse cenario, `EMBED_OPERATION_WORKER` deve ficar `false`
+- o processamento da fila deve rodar em processo separado ou sob supervisao dedicada
+- isso evita misturar latencia da API com execucao assíncrona e reduz risco operacional em ambientes com multiplas instancias
 
 ## Conformidade de LLM
 

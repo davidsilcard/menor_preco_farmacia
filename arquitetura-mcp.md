@@ -202,3 +202,27 @@ Isso deixa claro para a LLM e para a operacao humana que:
 - a resposta deve carregar contexto de frescor
 - o sistema so coleta demanda relevante do CEP
 - produto ja raspado deve ser reaproveitado antes de abrir nova fila desnecessaria
+
+## Worker embarcado vs producao
+
+O comando `uv run python -m src.main` pode subir um worker embarcado para drenar `operation_jobs` no mesmo processo da API.
+
+Esse modo existe para:
+
+- desenvolvimento local
+- homologacao
+- operacao simples
+
+Mas isso nao deve ser tratado como topologia final obrigatoria.
+
+Em producao maior, o ideal e:
+
+- desligar `EMBED_OPERATION_WORKER`
+- manter a API HTTP separada do processamento assíncrono
+- rodar o worker em processo dedicado, servico supervisionado ou orquestracao equivalente
+
+Motivos:
+
+- reduzir acoplamento entre latencia da API e execucao de fila
+- evitar concorrencia ambigua quando houver multiplas instancias da API
+- permitir escala e observabilidade independentes para atendimento e processamento

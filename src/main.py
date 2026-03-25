@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import logging
+import threading
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func
@@ -27,6 +28,7 @@ from src.services.catalog_queries import (
 )
 from src.services.ops import ops_health_payload as _ops_health_payload
 from src.services.ops import pharmacy_metrics as _pharmacy_metrics
+from src.services.operation_jobs import process_next_operation_job
 from src.services.tool_models import (
     InvoiceComparisonRequest,
     ObservedItemRequest,
@@ -51,9 +53,82 @@ app.include_router(ops_router)
 LOGGER = get_logger(__name__)
 
 
+def _embedded_worker_enabled(application: FastAPI) -> bool:
+    return bool(getattr(application.state, "enable_embedded_operation_worker", False))
+
+
+def _embedded_worker_poll_seconds() -> int:
+    return max(int(settings.EMBED_OPERATION_WORKER_POLL_SECONDS), 1)
+
+
+def _embedded_operation_worker_loop(stop_event: threading.Event):
+    poll_seconds = _embedded_worker_poll_seconds()
+    while not stop_event.is_set():
+        try:
+            job = process_next_operation_job()
+        except Exception as exc:
+            log_event(
+                LOGGER,
+                logging.ERROR,
+                "embedded_operation_worker_failed",
+                error_message=str(exc)[:500],
+            )
+            stop_event.wait(poll_seconds)
+            continue
+
+        if job:
+            continue
+
+        stop_event.wait(poll_seconds)
+
+
+def _start_embedded_operation_worker(application: FastAPI):
+    if not _embedded_worker_enabled(application):
+        return None
+    if getattr(application.state, "embedded_operation_worker_thread", None):
+        return application.state.embedded_operation_worker_thread
+
+    stop_event = threading.Event()
+    worker_thread = threading.Thread(
+        target=_embedded_operation_worker_loop,
+        args=(stop_event,),
+        daemon=True,
+        name="embedded-operation-worker",
+    )
+    application.state.embedded_operation_worker_stop_event = stop_event
+    application.state.embedded_operation_worker_thread = worker_thread
+    worker_thread.start()
+    log_event(LOGGER, logging.INFO, "embedded_operation_worker_started", poll_seconds=_embedded_worker_poll_seconds())
+    return worker_thread
+
+
+def _stop_embedded_operation_worker(application: FastAPI):
+    stop_event = getattr(application.state, "embedded_operation_worker_stop_event", None)
+    worker_thread = getattr(application.state, "embedded_operation_worker_thread", None)
+    if stop_event is None or worker_thread is None:
+        return
+
+    stop_event.set()
+    worker_thread.join(timeout=max(_embedded_worker_poll_seconds() + 1, 2))
+    application.state.embedded_operation_worker_stop_event = None
+    application.state.embedded_operation_worker_thread = None
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "embedded_operation_worker_stopped",
+        thread_alive=worker_thread.is_alive(),
+    )
+
+
 @app.on_event("startup")
 def _ensure_database_schema_on_startup():
     ensure_database_schema()
+    _start_embedded_operation_worker(app)
+
+
+@app.on_event("shutdown")
+def _stop_background_workers_on_shutdown():
+    _stop_embedded_operation_worker(app)
 
 
 def _validated_optional_cep(cep):
@@ -358,6 +433,7 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
 if __name__ == "__main__":
     import uvicorn
 
+    app.state.enable_embedded_operation_worker = settings.EMBED_OPERATION_WORKER
     uvicorn.run(
         app,
         host="0.0.0.0",
