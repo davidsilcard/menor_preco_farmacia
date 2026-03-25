@@ -1590,6 +1590,55 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["resolution_source"], "canonical_match")
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
 
+    def test_search_products_service_reuses_source_product_fallback_before_queueing(self):
+        canonical = CanonicalProduct(
+            id=20,
+            canonical_name="Dipirona Monoidratada 500mg 20 Comprimidos",
+            normalized_name="metamizol sodico 500mg 20 comprimidos",
+        )
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        source_product = SourceProduct(
+            id=30,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Neosaldina Drageas 20 Comprimidos",
+            normalized_name="neosaldina drageas 20 comprimidos",
+            source_sku="sku-30",
+        )
+        match = ProductMatch(
+            id=1,
+            source_product_id=30,
+            canonical_product_id=20,
+            match_type="regulatory_anchor",
+            review_status="auto_approved",
+            confidence=0.97,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=1,
+                source_product_id=30,
+                price=15.0,
+                availability="available",
+                captured_at=datetime.now(UTC).replace(tzinfo=None),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        ]
+
+        response = _search_products_service("neosaldina drageas", "89254300", session)
+
+        self.assertEqual(response["result"]["resolution_source"], "source_product_fallback")
+        self.assertIsNone(response["result"]["search_job"])
+        self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 20)
+
     def test_compare_shopping_list_service_exposes_resolution_source_summary(self):
         session = _FakeSession([])
         canonical = CanonicalProduct(id=10, canonical_name="Jardiance 25mg", normalized_name="jardiance 25mg")
@@ -1606,6 +1655,57 @@ class ToolHelperTests(unittest.TestCase):
             response["result"]["resolution_source_summary"],
             {"canonical_match": 1, "queued_enrichment": 1},
         )
+
+    def test_compare_shopping_list_service_marks_source_product_fallback_items(self):
+        canonical = CanonicalProduct(
+            id=20,
+            canonical_name="Dipirona Monoidratada 500mg 20 Comprimidos",
+            normalized_name="metamizol sodico 500mg 20 comprimidos",
+        )
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        source_product = SourceProduct(
+            id=30,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Neosaldina Drageas 20 Comprimidos",
+            normalized_name="neosaldina drageas 20 comprimidos",
+            source_sku="sku-30",
+        )
+        match = ProductMatch(
+            id=1,
+            source_product_id=30,
+            canonical_product_id=20,
+            match_type="regulatory_anchor",
+            review_status="auto_approved",
+            confidence=0.97,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=1,
+                source_product_id=30,
+                price=15.0,
+                availability="available",
+                captured_at=datetime.now(UTC).replace(tzinfo=None),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        ]
+
+        response = _compare_shopping_list_service(
+            ShoppingListRequest(cep="89254300", items=["neosaldina drageas"]),
+            session,
+        )
+
+        self.assertEqual(response["result"]["items"][0]["resolution_source"], "source_product_fallback")
+        self.assertEqual(response["result"]["resolution_source_summary"], {"source_product_fallback": 1})
 
     def test_search_observed_item_service_exposes_resolution_source(self):
         session = _FakeSession([])

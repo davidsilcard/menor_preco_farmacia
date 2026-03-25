@@ -9,6 +9,7 @@ from src.services.catalog_queries import (
     build_cmed_reference_map,
     canonical_offer_payload,
     find_matching_canonicals,
+    find_matching_canonicals_from_source_products,
     normalize_query,
     validate_cep_context,
 )
@@ -70,6 +71,18 @@ def resolution_source_summary(items: list[dict]):
             continue
         counts[source] = counts.get(source, 0) + 1
     return counts
+
+
+def find_matches_with_resolution_source(db: Session, query: str, latest_prices: dict, *, limit: int | None = None):
+    matches = find_matching_canonicals(db, query, limit=limit) if limit is not None else find_matching_canonicals(db, query)
+    if matches:
+        return matches, "canonical_match"
+
+    fallback_matches = find_matching_canonicals_from_source_products(db, query, latest_prices, limit=limit or 5)
+    if fallback_matches:
+        return fallback_matches, "source_product_fallback"
+
+    return [], None
 
 
 def build_observed_query(payload: ObservedItemRequest):
@@ -249,7 +262,7 @@ def search_products_service(query: str, cep: str, db: Session):
     requested_cep = validate_cep_context(cep)
     latest_prices = build_latest_price_map(db, requested_cep)
     cmed_reference_map = build_cmed_reference_map(db)
-    matches = find_matching_canonicals(db, query)
+    matches, resolution_source = find_matches_with_resolution_source(db, query, latest_prices)
     results = [
         {
             "canonical_product_id": canonical_product.id,
@@ -296,7 +309,7 @@ def search_products_service(query: str, cep: str, db: Session):
         "search_products",
         {"query": query, "cep": cep},
         {
-            "resolution_source": "canonical_match" if results else "queued_enrichment",
+            "resolution_source": resolution_source or "queued_enrichment",
             "results": results,
             "catalog_request": catalog_request_payload(catalog_request),
             "search_job": search_job_payload(search_job, db),
@@ -320,7 +333,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     tracked_items = []
 
     for item in payload.items:
-        matches = find_matching_canonicals(db, item, limit=1)
+        matches, resolution_source = find_matches_with_resolution_source(db, item, latest_prices, limit=1)
         if not matches:
             comparisons.append({"requested_item": item, "match_found": False, "results": [], "resolution_source": "queued_enrichment"})
             tracked_item = register_tracked_item(db, item, requested_cep, "compare_shopping_list", source_kind="shopping_list", match_confidence=0.0)
@@ -350,7 +363,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
                 "best_offer": best_pricing_offer(offers),
                 "data_freshness": (best_pricing_offer(offers) or {}).get("data_freshness"),
                 "offers": offers,
-                "resolution_source": "canonical_match",
+                "resolution_source": resolution_source,
                 "availability_summary": item_availability_summary({"match_found": True, "best_offer": best_pricing_offer(offers), "offers": offers}),
             }
         )
@@ -400,7 +413,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     tracked_items = []
 
     for item in payload.items:
-        matches = find_matching_canonicals(db, item.description, limit=1)
+        matches, resolution_source = find_matches_with_resolution_source(db, item.description, latest_prices, limit=1)
         if not matches:
             comparisons.append(
                 {
@@ -447,7 +460,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
                 "data_freshness": (best_offer or {}).get("data_freshness"),
                 "potential_savings": potential_savings,
                 "offers": offers,
-                "resolution_source": "canonical_match",
+                "resolution_source": resolution_source,
                 "availability_summary": item_availability_summary({"match_found": True, "best_offer": best_offer, "offers": offers}),
             }
         )
@@ -511,7 +524,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     query = build_observed_query(payload)
     latest_prices = build_latest_price_map(db, requested_cep)
     cmed_reference_map = build_cmed_reference_map(db)
-    matches = find_matching_canonicals(db, query)
+    matches, resolution_source = find_matches_with_resolution_source(db, query, latest_prices)
     results = [
         {
             "canonical_product_id": canonical_product.id,
@@ -559,7 +572,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
         payload.model_dump(),
         {
             "normalized_query": query,
-            "resolution_source": "canonical_match" if results else "queued_enrichment",
+            "resolution_source": resolution_source or "queued_enrichment",
             "results": results,
             "catalog_request": catalog_request_payload(catalog_request),
             "search_job": search_job_payload(search_job, db),
