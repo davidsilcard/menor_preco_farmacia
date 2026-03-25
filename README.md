@@ -76,6 +76,7 @@ Regra pratica:
 Manual operacional da LLM:
 
 - `LLM_OPERATOR_MANUAL.md`
+- `LLM_TOOL_EXAMPLES.md`
 
 ## Semantica de resolucao para a LLM
 
