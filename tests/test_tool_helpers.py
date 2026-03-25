@@ -39,6 +39,7 @@ from src.services.demand_tracking import (
     register_search_job as _register_search_job,
     register_tracked_item as _register_tracked_item,
     search_job_payload as _search_job_payload,
+    sync_tracked_item_with_search_results as _sync_tracked_item_with_search_results,
     tracked_item_priority as _tracked_item_priority,
     tracked_item_status as _tracked_item_status,
 )
@@ -1257,6 +1258,64 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(len(session.tracked_items), 1)
         self.assertEqual(merged.request_count_total, 5)
         self.assertEqual(merged.canonical_product_id, 10)
+
+    def test_sync_tracked_item_with_search_results_promotes_canonical_and_marks_scraped(self):
+        session = _FakeSession([])
+        tracked_item = TrackedItemByCep(
+            id=1,
+            cep="89254300",
+            query="dipirona",
+            normalized_query="dipirona",
+            status="active",
+            request_count_total=2,
+            first_requested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+            last_requested_at=datetime.now(UTC).replace(tzinfo=None),
+            scrape_priority=100.0,
+        )
+        session.tracked_items = [tracked_item]
+
+        updated = _sync_tracked_item_with_search_results(
+            session,
+            normalized_query="dipirona",
+            cep="89254300",
+            search_results={
+                "results": [
+                    {
+                        "canonical_product_id": 77,
+                        "score": 64,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(updated.canonical_product_id, 77)
+        self.assertEqual(updated.last_match_confidence, 0.64)
+        self.assertIsNotNone(updated.last_scraped_at)
+
+    def test_sync_tracked_item_with_search_results_ignores_empty_results(self):
+        session = _FakeSession([])
+        tracked_item = TrackedItemByCep(
+            id=1,
+            cep="89254300",
+            query="dipirona",
+            normalized_query="dipirona",
+            status="active",
+            request_count_total=2,
+            first_requested_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+            last_requested_at=datetime.now(UTC).replace(tzinfo=None),
+            scrape_priority=100.0,
+        )
+        session.tracked_items = [tracked_item]
+
+        updated = _sync_tracked_item_with_search_results(
+            session,
+            normalized_query="dipirona",
+            cep="89254300",
+            search_results={"results": []},
+        )
+
+        self.assertIsNone(updated)
+        self.assertIsNone(tracked_item.canonical_product_id)
 
     def test_scheduler_status_marks_old_item_inactive(self):
         self.assertEqual(

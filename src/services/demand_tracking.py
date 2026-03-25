@@ -303,6 +303,43 @@ def register_search_job(
     return job
 
 
+def sync_tracked_item_with_search_results(
+    db: Session,
+    *,
+    normalized_query: str,
+    cep: str,
+    search_results: dict,
+):
+    if not normalized_query or not search_results.get("results"):
+        return None
+
+    tracked_item = (
+        db.query(TrackedItemByCep)
+        .filter(TrackedItemByCep.cep == cep, TrackedItemByCep.normalized_query == normalized_query)
+        .first()
+    )
+    if not tracked_item:
+        return None
+
+    top_result = search_results["results"][0]
+    now = datetime.now(UTC).replace(tzinfo=None)
+    canonical_product_id = top_result.get("canonical_product_id")
+    score = top_result.get("score")
+    if canonical_product_id:
+        tracked_item.canonical_product_id = canonical_product_id
+    if score is not None:
+        tracked_item.last_match_confidence = min(score / 100, 1.0)
+    tracked_item.last_scraped_at = now
+    tracked_item.status = tracked_item_status(tracked_item.last_requested_at)
+    tracked_item.scrape_priority = tracked_item_priority(
+        tracked_item.request_count_total,
+        tracked_item.last_requested_at,
+        tracked_item.canonical_product_id,
+    )
+    db.flush()
+    return tracked_item
+
+
 def queue_metrics(db: Session, cep: str | None = None):
     try:
         status_query = db.query(SearchJob.status, func.count(SearchJob.id).label("count"))

@@ -15,6 +15,7 @@ from src.services.catalog_queries import (
     find_matching_canonicals_from_source_products,
     preferred_search_terms,
 )
+from src.services.demand_tracking import sync_tracked_item_with_search_results
 from src.services.scraper_registry import SCRAPER_REGISTRY
 from src.services.tool_use import item_availability_summary
 
@@ -225,6 +226,12 @@ def process_search_job(job_id: int | None = None):
                     )
 
             search_results = _job_search_result_payload(session, job.query, job.cep)
+            sync_tracked_item_with_search_results(
+                session,
+                normalized_query=job.normalized_query,
+                cep=job.cep,
+                search_results=search_results,
+            )
             warnings = _job_warnings(scraper_results, search_results)
             final_status = _job_completion_status(scraper_results)
             payload = {
