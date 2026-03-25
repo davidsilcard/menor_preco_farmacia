@@ -6,6 +6,7 @@ from src.models.base import CanonicalProduct, ProductMatch, SourceProduct
 from src.services.catalog_queries import (
     best_pricing_offer,
     build_latest_price_map,
+    build_cmed_reference_map,
     canonical_offer_payload,
     find_matching_canonicals,
     normalize_query,
@@ -237,6 +238,7 @@ def availability_warnings(items: list[dict]):
 def search_products_service(query: str, cep: str, db: Session):
     requested_cep = validate_cep_context(cep)
     latest_prices = build_latest_price_map(db, requested_cep)
+    cmed_reference_map = build_cmed_reference_map(db)
     matches = find_matching_canonicals(db, query)
     results = [
         {
@@ -252,7 +254,7 @@ def search_products_service(query: str, cep: str, db: Session):
             ),
         }
         for score, canonical_product in matches
-        for offers in [canonical_offer_payload(canonical_product, latest_prices)]
+        for offers in [canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)]
     ]
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
     catalog_request = None
@@ -298,6 +300,7 @@ def search_products_service(query: str, cep: str, db: Session):
 def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
     latest_prices = build_latest_price_map(db, requested_cep)
+    cmed_reference_map = build_cmed_reference_map(db)
     comparisons = []
     scores = []
     catalog_requests = []
@@ -320,7 +323,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
 
         score, canonical_product = matches[0]
         scores.append(score)
-        offers = canonical_offer_payload(canonical_product, latest_prices)
+        offers = canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)
         tracked_item = register_tracked_item(
             db, item, requested_cep, "compare_shopping_list", canonical_product=canonical_product, source_kind="shopping_list", match_confidence=min(score / 100, 1.0)
         )
@@ -375,6 +378,7 @@ def compare_basket_service(payload: ShoppingListRequest, db: Session):
 def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
     latest_prices = build_latest_price_map(db, requested_cep)
+    cmed_reference_map = build_cmed_reference_map(db)
     comparisons = []
     max_score = 0
     catalog_requests = []
@@ -397,7 +401,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
 
         score, canonical_product = matches[0]
         max_score = max(max_score, score)
-        offers = canonical_offer_payload(canonical_product, latest_prices)
+        offers = canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)
         best_offer = best_pricing_offer(offers)
         tracked_item = register_tracked_item(
             db, item.description, requested_cep, "compare_invoice_items", canonical_product=canonical_product, source_kind="invoice_item", match_confidence=min(score / 100, 1.0)
@@ -480,6 +484,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     requested_cep = validate_cep_context(payload.cep)
     query = build_observed_query(payload)
     latest_prices = build_latest_price_map(db, requested_cep)
+    cmed_reference_map = build_cmed_reference_map(db)
     matches = find_matching_canonicals(db, query)
     results = [
         {
@@ -493,7 +498,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
             "availability_summary": item_availability_summary({"match_found": True, "best_offer": best_pricing_offer(offers), "offers": offers}),
         }
         for score, canonical_product in matches
-        for offers in [canonical_offer_payload(canonical_product, latest_prices)]
+        for offers in [canonical_offer_payload(canonical_product, latest_prices, cmed_reference_map)]
     ]
 
     warnings = []
@@ -554,7 +559,7 @@ def compare_canonical_product_service(canonical_product_id: int, cep: str, db: S
     if not canonical_product:
         raise ValueError("Produto canonico nao encontrado")
     latest_prices = build_latest_price_map(db, requested_cep)
-    offers = canonical_offer_payload(canonical_product, latest_prices)
+    offers = canonical_offer_payload(canonical_product, latest_prices, build_cmed_reference_map(db))
     return {
         "canonical_product_id": canonical_product.id,
         "canonical_name": canonical_product.canonical_name,
