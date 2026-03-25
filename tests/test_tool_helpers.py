@@ -1588,7 +1588,14 @@ class ToolHelperTests(unittest.TestCase):
 
     def test_search_products_service_exposes_canonical_resolution_source(self):
         session = _FakeSession([])
-        canonical = CanonicalProduct(id=10, canonical_name="Jardiance 25mg", normalized_name="jardiance 25mg")
+        canonical = CanonicalProduct(
+            id=10,
+            canonical_name="Jardiance 25mg",
+            normalized_name="jardiance 25mg",
+            dosage="25mg",
+            presentation="comprimido",
+            pack_size="30 comprimidos",
+        )
         session.canonicals = [canonical]
 
         response = _search_products_service("jardiance 25mg", "89254300", session)
@@ -1598,6 +1605,8 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["evidence_level"], "canonical_only")
         self.assertFalse(response["result"]["requires_polling"])
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
+        self.assertEqual(response["result"]["results"][0]["display_name"], "Jardiance 25mg - comprimido - 30 comprimidos")
+        self.assertEqual(response["result"]["results"][0]["presentation_group"], "25mg | comprimido | 30 comprimidos")
 
     def test_search_products_service_reuses_source_product_fallback_before_queueing(self):
         canonical = CanonicalProduct(
@@ -1653,6 +1662,11 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["results_with_offers_count"], 1)
         self.assertEqual(response["result"]["unique_pharmacies_count"], 1)
         self.assertEqual(response["result"]["unique_pharmacies"], ["FarmaSesi"])
+        self.assertEqual(response["result"]["results"][0]["offers"][0]["source_display_name"], "Neosaldina Drageas 20 Comprimidos")
+        self.assertEqual(
+            response["result"]["results"][0]["presentation_group"],
+            "Dipirona Monoidratada 500mg 20 Comprimidos",
+        )
 
     def test_search_products_service_distinguishes_offer_count_from_unique_pharmacies(self):
         pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")

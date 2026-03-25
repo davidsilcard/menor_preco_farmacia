@@ -91,6 +91,23 @@ def results_with_offers_count(results: list[dict]):
     return sum(1 for result in results if result.get("offers"))
 
 
+def canonical_display_name(canonical_product: CanonicalProduct):
+    parts = [canonical_product.canonical_name]
+    normalized_name = normalize_query(canonical_product.canonical_name)
+    for extra in [canonical_product.dosage, canonical_product.presentation, canonical_product.pack_size]:
+        normalized_extra = normalize_query(extra) if extra else None
+        if extra and normalized_extra and normalized_extra not in normalized_name:
+            parts.append(extra)
+    return " - ".join(parts)
+
+
+def canonical_presentation_group(canonical_product: CanonicalProduct):
+    parts = [part for part in [canonical_product.dosage, canonical_product.presentation, canonical_product.pack_size] if part]
+    if parts:
+        return " | ".join(parts)
+    return canonical_product.canonical_name
+
+
 def evidence_level(resolution_source: str | None, results: list[dict]):
     if results_offer_count(results) > 0:
         return "real_offer"
@@ -323,6 +340,8 @@ def search_products_service(query: str, cep: str, db: Session):
         {
             "canonical_product_id": canonical_product.id,
             "canonical_name": canonical_product.canonical_name,
+            "display_name": canonical_display_name(canonical_product),
+            "presentation_group": canonical_presentation_group(canonical_product),
             "ean_gtin": canonical_product.ean_gtin,
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
@@ -437,6 +456,8 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
                 "score": score,
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
+                "display_name": canonical_display_name(canonical_product),
+                "presentation_group": canonical_presentation_group(canonical_product),
                 "best_offer": best_pricing_offer(offers),
                 "data_freshness": (best_pricing_offer(offers) or {}).get("data_freshness"),
                 "offers": offers,
@@ -554,6 +575,8 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
                 "score": score,
                 "canonical_product_id": canonical_product.id,
                 "canonical_name": canonical_product.canonical_name,
+                "display_name": canonical_display_name(canonical_product),
+                "presentation_group": canonical_presentation_group(canonical_product),
                 "best_offer": best_offer,
                 "data_freshness": (best_offer or {}).get("data_freshness"),
                 "potential_savings": potential_savings,
@@ -661,6 +684,8 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
         {
             "canonical_product_id": canonical_product.id,
             "canonical_name": canonical_product.canonical_name,
+            "display_name": canonical_display_name(canonical_product),
+            "presentation_group": canonical_presentation_group(canonical_product),
             "ean_gtin": canonical_product.ean_gtin,
             "anvisa_code": canonical_product.anvisa_code,
             "score": score,
@@ -755,6 +780,8 @@ def compare_canonical_product_service(canonical_product_id: int, cep: str, db: S
     return {
         "canonical_product_id": canonical_product.id,
         "canonical_name": canonical_product.canonical_name,
+        "display_name": canonical_display_name(canonical_product),
+        "presentation_group": canonical_presentation_group(canonical_product),
         "ean_gtin": canonical_product.ean_gtin,
         "anvisa_code": canonical_product.anvisa_code,
         "cep": requested_cep,

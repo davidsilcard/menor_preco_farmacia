@@ -410,6 +410,8 @@ def canonical_offer_payload(canonical_product: CanonicalProduct, latest_prices: 
             {
                 "source_product_id": source_product.id,
                 "pharmacy": source_product.pharmacy.name,
+                "display_name": canonical_product.canonical_name,
+                "source_display_name": source_product.raw_name,
                 "raw_name": source_product.raw_name,
                 "source_sku": source_product.source_sku,
                 "price": latest_snapshot.price,
