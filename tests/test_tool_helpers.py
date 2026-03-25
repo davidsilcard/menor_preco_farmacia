@@ -2004,6 +2004,58 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(response["result"]["groups"][0]["group_label"], "500mg | comprimido | 30 comprimidos")
         self.assertEqual(response["result"]["groups"][0]["results_count"], 2)
 
+    def test_search_products_service_marks_expired_only_results_for_cautious_response(self):
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        canonical = CanonicalProduct(
+            id=70,
+            canonical_name="Amoxicilina 500mg 21 Capsulas",
+            normalized_name="amoxicilina 500mg 21 capsulas",
+            dosage="500mg",
+            presentation="capsula",
+            pack_size="21 capsulas",
+        )
+        source_product = SourceProduct(
+            id=71,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Amoxicilina 500mg 21 Capsulas",
+            normalized_name="amoxicilina 500mg 21 capsulas",
+            source_sku="sku-71",
+        )
+        match = ProductMatch(
+            id=71,
+            source_product_id=71,
+            canonical_product_id=70,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=71,
+                source_product_id=71,
+                price=21.5,
+                availability="available",
+                captured_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        ]
+
+        response = _search_products_service("amoxicilina 500mg", "89254300", session, match_mode="strict")
+
+        self.assertEqual(response["result"]["next_action"], "respond_with_caution")
+        self.assertEqual(response["result"]["freshness_summary"]["quality"], "expired_only")
+        self.assertEqual(response["result"]["freshness_summary"]["expired_results"], 1)
+
     def test_search_products_service_rejects_invalid_match_mode(self):
         session = _FakeSession([])
 
@@ -2034,6 +2086,58 @@ class ToolHelperTests(unittest.TestCase):
             response["result"]["resolution_source_summary"],
             {"canonical_match": 1, "queued_enrichment": 1},
         )
+
+    def test_compare_shopping_list_service_warns_when_only_expired_best_offers_exist(self):
+        canonical = CanonicalProduct(
+            id=90,
+            canonical_name="Jardiance 25mg",
+            normalized_name="jardiance 25mg",
+        )
+        pharmacy = Pharmacy(id=1, name="FarmaSesi", slug="farmasesi")
+        source_product = SourceProduct(
+            id=91,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Jardiance 25mg 30 Comprimidos",
+            normalized_name="jardiance 25mg 30 comprimidos",
+            source_sku="sku-91",
+        )
+        match = ProductMatch(
+            id=91,
+            source_product_id=91,
+            canonical_product_id=90,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match.source_product = source_product
+        match.canonical_product = canonical
+        source_product.match = match
+        canonical.matches = [match]
+
+        session = _FakeSession([canonical])
+        session.source_products = [source_product]
+        session.matches = [match]
+        session.price_snapshots = [
+            PriceSnapshot(
+                id=91,
+                source_product_id=91,
+                price=199.0,
+                availability="available",
+                captured_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3),
+                scrape_run_id=1,
+                cep="89254300",
+            )
+        ]
+
+        response = _compare_shopping_list_service(
+            ShoppingListRequest(cep="89254300", items=["jardiance 25mg"]),
+            session,
+        )
+
+        self.assertEqual(response["result"]["next_action"], "respond_with_caution")
+        self.assertEqual(response["result"]["freshness_summary"]["quality"], "expired_only")
+        self.assertIn("expirados", " ".join(response["warnings"]).lower())
 
     def test_compare_shopping_list_service_marks_source_product_fallback_items(self):
         canonical = CanonicalProduct(

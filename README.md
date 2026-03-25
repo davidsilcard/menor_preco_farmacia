@@ -98,6 +98,14 @@ Regra de uso:
 - `queued_enrichment` nao e resposta final; a LLM deve informar que a busca foi enfileirada
 - `searched_no_results` deve ser tratado como ausencia real de resultado apos processamento, nao como fila pendente
 
+Sinalizacao adicional para a LLM:
+
+- `next_action = respond_now`: ha resultado util com frescor aceitavel
+- `next_action = respond_with_caution`: ha resultado util, mas os melhores snapshots estao expirados e a resposta deve deixar isso explicito
+- `next_action = poll_search_job`: a busca ainda depende do processamento do job
+
+As tools de atendimento tambem expõem `freshness_summary` para evitar que a LLM trate preco expirado como dado fresco.
+
 ## Robustez de coleta
 
 As coletas em lote agora degradam de forma controlada quando um scraper rejeita um conjunto grande de termos.

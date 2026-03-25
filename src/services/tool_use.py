@@ -123,10 +123,39 @@ def recommended_match_mode(query: str):
     return "strict" if requested_strength_tokens(query) else "broad"
 
 
+def results_freshness_summary(results: list[dict]):
+    best_offers = [best_pricing_offer(result.get("offers") or []) for result in results]
+    freshness_payloads = [offer.get("data_freshness") for offer in best_offers if offer and offer.get("data_freshness")]
+    counts = {
+        "fresh_results": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "fresh"),
+        "stale_results": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "stale"),
+        "expired_results": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "expired"),
+        "unknown_results": sum(1 for payload in freshness_payloads if payload.get("freshness_status") == "unknown"),
+    }
+    if not freshness_payloads:
+        quality = "unknown"
+    elif counts["expired_results"] == len(freshness_payloads):
+        quality = "expired_only"
+    elif counts["fresh_results"] > 0:
+        quality = "fresh_available"
+    elif counts["stale_results"] > 0:
+        quality = "stale_only"
+    else:
+        quality = "unknown"
+    return {
+        **counts,
+        "results_with_freshness": len(freshness_payloads),
+        "quality": quality,
+    }
+
+
 def next_action_for_results(results: list[dict], *, requires_polling: bool):
     if requires_polling:
         return "poll_search_job", "A busca foi enfileirada e ainda depende do resultado do search_job."
     if results:
+        freshness_summary = results_freshness_summary(results)
+        if freshness_summary["quality"] == "expired_only":
+            return "respond_with_caution", "Existem ofertas, mas os melhores snapshots estao expirados e podem nao refletir o preco atual."
         return "respond_now", "Ja existem resultados estruturados suficientes para responder ao usuario."
     return "ask_user_to_refine", "Nao ha resultado util imediato; vale pedir mais detalhes da apresentacao ou dosagem."
 
@@ -512,6 +541,7 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
     requires_polling = search_job_result is not None
     result_resolution_source = resolution_source or "queued_enrichment"
     grouped_payload = grouped_results(results)
+    freshness_summary = results_freshness_summary(results)
     next_action, next_action_reason = next_action_for_results(results, requires_polling=requires_polling)
     result_refs = flattened_tool_refs(
         catalog_request=catalog_request_result,
@@ -535,6 +565,7 @@ def search_products_service(query: str, cep: str, db: Session, *, match_mode: st
             "results_count": len(results),
             "offers_count": results_offer_count(results),
             "results_with_offers_count": results_with_offers_count(results),
+            "freshness_summary": freshness_summary,
             "structural_conflict_count": structural_conflict_count(results),
             "unique_pharmacies_count": len(unique_pharmacies(results)),
             "unique_pharmacies": unique_pharmacies(results),
@@ -620,7 +651,10 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     item_results = [item for item in comparisons if item.get("match_found")]
     item_resolution_counts = resolution_source_summary(comparisons)
     grouped_payload = grouped_results(item_results)
+    freshness_summary = results_freshness_summary(item_results)
     next_action, next_action_reason = next_action_for_results(item_results, requires_polling=requires_polling)
+    if freshness_summary["quality"] == "expired_only":
+        warnings.append("Os melhores precos encontrados para a cesta estao expirados; responda com cautela.")
 
     return tool_response(
         "compare_shopping_list",
@@ -638,6 +672,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
             "results_count": len(item_results),
             "offers_count": results_offer_count(item_results),
             "results_with_offers_count": results_with_offers_count(item_results),
+            "freshness_summary": freshness_summary,
             "unique_pharmacies_count": len(unique_pharmacies(item_results)),
             "unique_pharmacies": unique_pharmacies(item_results),
             "groups": grouped_payload,
@@ -744,7 +779,10 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     item_results = [item for item in comparisons if item.get("match_found")]
     item_resolution_counts = resolution_source_summary(comparisons)
     grouped_payload = grouped_results(item_results)
+    freshness_summary = results_freshness_summary(item_results)
     next_action, next_action_reason = next_action_for_results(item_results, requires_polling=requires_polling)
+    if freshness_summary["quality"] == "expired_only":
+        warnings.append("Os melhores precos comparados na nota estao expirados; responda com cautela.")
 
     return tool_response(
         "compare_invoice_items",
@@ -762,6 +800,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
             "results_count": len(item_results),
             "offers_count": results_offer_count(item_results),
             "results_with_offers_count": results_with_offers_count(item_results),
+            "freshness_summary": freshness_summary,
             "unique_pharmacies_count": len(unique_pharmacies(item_results)),
             "unique_pharmacies": unique_pharmacies(item_results),
             "groups": grouped_payload,
@@ -803,6 +842,7 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "results_count": result_payload.get("results_count"),
             "offers_count": result_payload.get("offers_count"),
             "results_with_offers_count": result_payload.get("results_with_offers_count"),
+            "freshness_summary": result_payload.get("freshness_summary"),
             "unique_pharmacies_count": result_payload.get("unique_pharmacies_count"),
             "unique_pharmacies": result_payload.get("unique_pharmacies", []),
             "groups": result_payload.get("groups", []),
@@ -877,6 +917,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
     requires_polling = search_job_result is not None
     result_resolution_source = resolution_source or "queued_enrichment"
     grouped_payload = grouped_results(results)
+    freshness_summary = results_freshness_summary(results)
     next_action, next_action_reason = next_action_for_results(results, requires_polling=requires_polling)
     result_refs = flattened_tool_refs(
         catalog_request=catalog_request_result,
@@ -898,6 +939,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
             "results_count": len(results),
             "offers_count": results_offer_count(results),
             "results_with_offers_count": results_with_offers_count(results),
+            "freshness_summary": freshness_summary,
             "unique_pharmacies_count": len(unique_pharmacies(results)),
             "unique_pharmacies": unique_pharmacies(results),
             "groups": grouped_payload,
