@@ -121,6 +121,15 @@ Objetivo:
 - evitar perder o lote inteiro por causa de um termo problematico
 - melhorar frescor de preco mesmo quando uma farmacia rejeita buscas maiores
 
+## Observabilidade de qualidade
+
+`/ops/metrics` agora expõe uma seção `quality` por `cep`, com:
+
+- `freshness_counts`: quantos snapshots mais recentes estao `fresh`, `stale`, `expired` ou `unknown`
+- `structural_conflict_matches`: quantos matches atuais ainda apresentam conflito estrutural entre canonical e origem
+
+Isso permite medir qualidade real da resposta, nao apenas volume de catalogo ou tamanho de fila.
+
 ## Arquitetura
 
 O modelo de dados foi desenhado para evitar comparacao por texto puro.

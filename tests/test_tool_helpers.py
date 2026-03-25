@@ -2547,6 +2547,59 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(payload["queue"]["total_jobs"], 1)
         self.assertEqual(payload["operation_jobs"]["total_jobs"], 1)
 
+    def test_ops_metrics_payload_exposes_quality_freshness_and_structural_conflict(self):
+        session = _FakeSession([])
+        pharmacy = Pharmacy(id=1, name="Drogaria Sao Paulo", slug="dsp")
+        canonical = CanonicalProduct(
+            id=10,
+            canonical_name="Glifage 500mg 30 Comprimidos",
+            normalized_name="glifage 500mg 30 comprimidos",
+            presentation="comprimido",
+        )
+        source = SourceProduct(
+            id=1,
+            pharmacy=pharmacy,
+            pharmacy_id=1,
+            raw_name="Glifage XR 500mg 30 Comprimidos",
+            normalized_name="glifage xr 500mg 30 comprimidos",
+            presentation="comprimido",
+            source_sku="1",
+        )
+        match = ProductMatch(
+            id=1,
+            source_product_id=1,
+            canonical_product_id=10,
+            match_type="normalized_name_strict",
+            review_status="auto_approved",
+            confidence=0.9,
+        )
+        match.source_product = source
+        match.canonical_product = canonical
+        source.match = match
+        session.source_products = [source]
+        session.matches = [match]
+
+        from src.services import ops as ops_module
+
+        original_builder = ops_module.build_latest_price_map
+        try:
+            ops_module.build_latest_price_map = lambda db, cep=None: {
+                1: PriceSnapshot(
+                    source_product_id=1,
+                    price=10.0,
+                    availability="available",
+                    captured_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3),
+                    scrape_run_id=1,
+                    cep=cep,
+                )
+            }
+            payload = _ops_metrics_payload(session, "89254300")
+        finally:
+            ops_module.build_latest_price_map = original_builder
+
+        self.assertEqual(payload["quality"]["freshness_counts"]["expired"], 1)
+        self.assertEqual(payload["quality"]["structural_conflict_matches"], 1)
+
     def test_live_health_payload_reports_alive_status(self):
         payload = _live_health_payload()
         self.assertEqual(payload["status"], "alive")

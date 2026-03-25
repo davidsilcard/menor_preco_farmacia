@@ -4,7 +4,14 @@ from sqlalchemy import case, func, text
 
 from src.core.config import settings
 from src.models.base import CatalogRequest, CanonicalProduct, Pharmacy, PriceSnapshot, ProductMatch, ScrapeRun, SourceProduct, TrackedItemByCep
-from src.services.catalog_queries import build_latest_price_map, data_age_minutes, freshness_status, normalize_cep, validate_cep_context
+from src.services.catalog_queries import (
+    build_latest_price_map,
+    data_age_minutes,
+    freshness_status,
+    normalize_cep,
+    structural_variant_conflict,
+    validate_cep_context,
+)
 from src.services.demand_tracking import queue_metrics
 from src.services.operation_jobs import operation_job_metrics
 from src.services.scraper_registry import SCRAPER_REGISTRY
@@ -260,9 +267,12 @@ def ops_metrics_payload(db, cep: str | None = None):
     source_product_ids = list(latest_prices.keys())
     source_product_id_set = set(source_product_ids)
     availability_counts = {"available": 0, "unknown": 0, "out_of_stock": 0}
+    freshness_counts = {"fresh": 0, "stale": 0, "expired": 0, "unknown": 0}
     for snapshot in latest_snapshots:
         availability = snapshot.availability or "unknown"
         availability_counts[availability] = availability_counts.get(availability, 0) + 1
+        freshness = freshness_status(snapshot.captured_at)
+        freshness_counts[freshness] = freshness_counts.get(freshness, 0) + 1
 
     try:
         match_type_query = db.query(ProductMatch.match_type, func.count(ProductMatch.id))
@@ -292,6 +302,14 @@ def ops_metrics_payload(db, cep: str | None = None):
             match_type_counts[match.match_type] = match_type_counts.get(match.match_type, 0) + 1
             review_status_counts[match.review_status] = review_status_counts.get(match.review_status, 0) + 1
         total_matches = len(matches)
+
+    if "matches" not in locals():
+        try:
+            matches = db.query(ProductMatch).all()
+            if normalized_cep:
+                matches = [match for match in matches if match.source_product_id in source_product_id_set]
+        except (AttributeError, TypeError, AssertionError):
+            matches = []
 
     if normalized_cep:
         catalog_requests_query = db.query(CatalogRequest).filter(CatalogRequest.cep == normalized_cep)
@@ -335,6 +353,20 @@ def ops_metrics_payload(db, cep: str | None = None):
             key = request.resolution_source or "pending"
             resolution_source_counts[key] = resolution_source_counts.get(key, 0) + 1
 
+    structural_conflict_count = 0
+    for match in matches:
+        source_product = getattr(match, "source_product", None)
+        canonical_product = getattr(match, "canonical_product", None)
+        if not source_product or not canonical_product:
+            continue
+        if structural_variant_conflict(
+            canonical_product.canonical_name,
+            canonical_product.presentation,
+            source_product.raw_name,
+            source_product.presentation,
+        ):
+            structural_conflict_count += 1
+
     return {
         "active_cep": settings.CEP,
         "configured_default_cep": settings.CEP,
@@ -350,6 +382,10 @@ def ops_metrics_payload(db, cep: str | None = None):
             "review_status_counts": review_status_counts,
         },
         "availability": availability_counts,
+        "quality": {
+            "freshness_counts": freshness_counts,
+            "structural_conflict_matches": structural_conflict_count,
+        },
         "queue": queue,
         "operation_jobs": operation_jobs,
         "catalog_requests": {
