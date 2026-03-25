@@ -316,6 +316,23 @@ def ops_metrics_payload(db, cep: str | None = None):
         source_products_count = db.query(SourceProduct).count()
         canonical_products_count = db.query(CanonicalProduct).count()
 
+    try:
+        resolution_source_rows = (
+            catalog_requests_query.with_entities(CatalogRequest.resolution_source, func.count(CatalogRequest.id))
+            .group_by(CatalogRequest.resolution_source)
+            .all()
+        )
+        resolution_source_counts = {
+            (_row_value(row, "resolution_source", 0) or "pending"): int(_row_value(row, "count", 1) or 0)
+            for row in resolution_source_rows
+        }
+    except (AttributeError, TypeError, AssertionError):
+        catalog_requests = catalog_requests_query.all()
+        resolution_source_counts = {}
+        for request in catalog_requests:
+            key = request.resolution_source or "pending"
+            resolution_source_counts[key] = resolution_source_counts.get(key, 0) + 1
+
     return {
         "active_cep": settings.CEP,
         "requested_cep": normalized_cep,
@@ -335,6 +352,7 @@ def ops_metrics_payload(db, cep: str | None = None):
         "catalog_requests": {
             "pending": catalog_requests_query.filter(CatalogRequest.status == "pending").count(),
             "total": catalog_requests_query.count(),
+            "resolution_source_counts": resolution_source_counts,
         },
         "tracked_items": {
             "total": tracked_items_query.count(),

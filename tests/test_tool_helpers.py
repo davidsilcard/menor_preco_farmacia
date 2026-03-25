@@ -1835,8 +1835,8 @@ class ToolHelperTests(unittest.TestCase):
         session.source_products = [source_a, source_b]
         session.matches = [match_a, match_b]
         session.catalog_requests = [
-            CatalogRequest(id=1, query="produto a", normalized_query="produto a", cep="89254300", status="pending"),
-            CatalogRequest(id=2, query="produto b", normalized_query="produto b", cep="01001000", status="pending"),
+            CatalogRequest(id=1, query="produto a", normalized_query="produto a", cep="89254300", status="pending", resolution_source=None),
+            CatalogRequest(id=2, query="produto b", normalized_query="produto b", cep="01001000", status="pending", resolution_source="canonical_match"),
         ]
         session.tracked_items = [
             TrackedItemByCep(id=1, cep="89254300", query="produto a", normalized_query="produto a", status="active", request_count_total=1, scrape_priority=100),
@@ -1872,6 +1872,7 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(payload["requested_cep"], "89254300")
         self.assertEqual(payload["catalog"]["source_products"], 1)
         self.assertEqual(payload["catalog_requests"]["total"], 1)
+        self.assertEqual(payload["catalog_requests"]["resolution_source_counts"], {"pending": 1})
         self.assertEqual(payload["tracked_items"]["total"], 1)
         self.assertEqual(payload["queue"]["total_jobs"], 1)
         self.assertEqual(payload["operation_jobs"]["total_jobs"], 1)
