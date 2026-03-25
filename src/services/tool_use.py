@@ -73,6 +73,48 @@ def resolution_source_summary(items: list[dict]):
     return counts
 
 
+def results_offer_count(results: list[dict]):
+    return sum(len(result.get("offers") or []) for result in results)
+
+
+def evidence_level(resolution_source: str | None, results: list[dict]):
+    if results_offer_count(results) > 0:
+        return "real_offer"
+    if resolution_source == "source_product_fallback" and results:
+        return "source_product"
+    if results:
+        return "canonical_only"
+    return "none"
+
+
+def outcome_for_results(results: list[dict], *, requires_polling: bool):
+    if requires_polling and not results:
+        return "queued"
+    if requires_polling and results:
+        return "partial"
+    if results:
+        return "resolved"
+    return "no_results"
+
+
+def flattened_tool_refs(*, catalog_request=None, search_job=None, operation_job=None, tracked_item=None):
+    return {
+        "catalog_request_id": catalog_request.get("catalog_request_id") if catalog_request else None,
+        "search_job_id": search_job.get("job_id") if search_job else None,
+        "operation_job_id": operation_job.get("operation_job_id") if operation_job else None,
+        "tracked_item_id": tracked_item.get("tracked_item_id") if tracked_item else None,
+    }
+
+
+def flattened_tool_ref_lists(*, catalog_requests=None, search_jobs=None, operation_jobs=None, tracked_items=None):
+    return {
+        "catalog_request_ids": [item["catalog_request_id"] for item in (catalog_requests or []) if item.get("catalog_request_id") is not None],
+        "search_job_ids": [item["job_id"] for item in (search_jobs or []) if item.get("job_id") is not None],
+        "operation_job_ids": [item["operation_job_id"] for item in (operation_jobs or []) if item and item.get("operation_job_id") is not None],
+        "tracked_item_ids": [item["tracked_item_id"] for item in (tracked_items or []) if item.get("tracked_item_id") is not None],
+    }
+
+
 def find_matches_with_resolution_source(db: Session, query: str, latest_prices: dict, *, limit: int | None = None):
     matches = find_matching_canonicals(db, query, limit=limit) if limit is not None else find_matching_canonicals(db, query)
     if matches:
@@ -305,16 +347,34 @@ def search_products_service(query: str, cep: str, db: Session):
         warnings.append("Item registrado para enriquecimento futuro do catalogo.")
         warnings.append("Busca sob demanda adicionada a fila de processamento.")
 
+    catalog_request_result = catalog_request_payload(catalog_request)
+    search_job_result = search_job_payload(search_job, db)
+    tracked_item_result = tracked_item_payload(tracked_item)
+    requires_polling = search_job_result is not None
+    result_resolution_source = resolution_source or "queued_enrichment"
+    result_refs = flattened_tool_refs(
+        catalog_request=catalog_request_result,
+        search_job=search_job_result,
+        operation_job=operation_job,
+        tracked_item=tracked_item_result,
+    )
+
     return tool_response(
         "search_products",
         {"query": query, "cep": cep},
         {
-            "resolution_source": resolution_source or "queued_enrichment",
+            "resolution_source": result_resolution_source,
+            "outcome": outcome_for_results(results, requires_polling=requires_polling),
+            "evidence_level": evidence_level(result_resolution_source, results),
+            "requires_polling": requires_polling,
+            "results_count": len(results),
+            "offers_count": results_offer_count(results),
+            **result_refs,
             "results": results,
-            "catalog_request": catalog_request_payload(catalog_request),
-            "search_job": search_job_payload(search_job, db),
+            "catalog_request": catalog_request_result,
+            "search_job": search_job_result,
             "operation_job": operation_job,
-            "tracked_item": tracked_item_payload(tracked_item),
+            "tracked_item": tracked_item_result,
         },
         confidence,
         warnings,
@@ -378,13 +438,31 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     if comparisons and not build_price_summary(comparisons)["best_basket_pharmacy"]:
         warnings.append("Nenhuma farmacia unica cobre toda a cesta atual.")
     warnings.extend(availability_warnings(comparisons))
+    ref_lists = flattened_tool_ref_lists(
+        catalog_requests=catalog_requests,
+        search_jobs=search_jobs,
+        operation_jobs=operation_jobs,
+        tracked_items=tracked_items,
+    )
+    requires_polling = bool(ref_lists["search_job_ids"])
+    item_results = [item for item in comparisons if item.get("match_found")]
+    item_resolution_counts = resolution_source_summary(comparisons)
 
     return tool_response(
         "compare_shopping_list",
         payload.model_dump(),
         {
             **build_basket_result(comparisons),
-            "resolution_source_summary": resolution_source_summary(comparisons),
+            "outcome": outcome_for_results(item_results, requires_polling=requires_polling),
+            "evidence_level": evidence_level(
+                "source_product_fallback" if item_resolution_counts.get("source_product_fallback") else "canonical_match" if item_results else None,
+                item_results,
+            ),
+            "requires_polling": requires_polling,
+            "results_count": len(item_results),
+            "offers_count": results_offer_count(item_results),
+            "resolution_source_summary": item_resolution_counts,
+            **ref_lists,
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
             "operation_jobs": operation_jobs,
@@ -474,13 +552,31 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     if comparisons and max_score < 50:
         warnings.append("Alguns matches da nota tem baixa confianca.")
     warnings.extend(availability_warnings(comparisons))
+    ref_lists = flattened_tool_ref_lists(
+        catalog_requests=catalog_requests,
+        search_jobs=search_jobs,
+        operation_jobs=operation_jobs,
+        tracked_items=tracked_items,
+    )
+    requires_polling = bool(ref_lists["search_job_ids"])
+    item_results = [item for item in comparisons if item.get("match_found")]
+    item_resolution_counts = resolution_source_summary(comparisons)
 
     return tool_response(
         "compare_invoice_items",
         payload.model_dump(),
         {
             "items": comparisons,
-            "resolution_source_summary": resolution_source_summary(comparisons),
+            "outcome": outcome_for_results(item_results, requires_polling=requires_polling),
+            "evidence_level": evidence_level(
+                "source_product_fallback" if item_resolution_counts.get("source_product_fallback") else "canonical_match" if item_results else None,
+                item_results,
+            ),
+            "requires_polling": requires_polling,
+            "results_count": len(item_results),
+            "offers_count": results_offer_count(item_results),
+            "resolution_source_summary": item_resolution_counts,
+            **ref_lists,
             "total_potential_savings": total_potential_savings,
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
@@ -500,6 +596,7 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
     warnings = list(invoice_result["warnings"])
     if not items:
         warnings.append("Nenhum item foi enviado para comparacao da nota.")
+    result_payload = invoice_result["result"]
     return tool_response(
         "compare_receipt",
         payload.model_dump(),
@@ -508,11 +605,20 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "captured_at": payload.captured_at,
             **build_basket_result(items),
             "summary": summary,
-            "resolution_source_summary": resolution_source_summary(items),
-            "catalog_requests": invoice_result["result"].get("catalog_requests", []),
-            "search_jobs": invoice_result["result"].get("search_jobs", []),
-            "operation_jobs": invoice_result["result"].get("operation_jobs", []),
-            "tracked_items": invoice_result["result"].get("tracked_items", []),
+            "outcome": result_payload.get("outcome"),
+            "evidence_level": result_payload.get("evidence_level"),
+            "requires_polling": result_payload.get("requires_polling"),
+            "results_count": result_payload.get("results_count"),
+            "offers_count": result_payload.get("offers_count"),
+            "resolution_source_summary": result_payload.get("resolution_source_summary", resolution_source_summary(items)),
+            "catalog_request_ids": result_payload.get("catalog_request_ids", []),
+            "search_job_ids": result_payload.get("search_job_ids", []),
+            "operation_job_ids": result_payload.get("operation_job_ids", []),
+            "tracked_item_ids": result_payload.get("tracked_item_ids", []),
+            "catalog_requests": result_payload.get("catalog_requests", []),
+            "search_jobs": result_payload.get("search_jobs", []),
+            "operation_jobs": result_payload.get("operation_jobs", []),
+            "tracked_items": result_payload.get("tracked_items", []),
         },
         estimate_overall_confidence(items),
         warnings,
@@ -567,17 +673,34 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
             warnings.append("Melhor oferta encontrada com estoque nao confirmado para item observado.")
 
     confidence = min(results[0]["score"] / 100, 1.0) if results else 0.0
+    catalog_request_result = catalog_request_payload(catalog_request)
+    search_job_result = search_job_payload(search_job, db)
+    tracked_item_result = tracked_item_payload(tracked_item)
+    requires_polling = search_job_result is not None
+    result_resolution_source = resolution_source or "queued_enrichment"
+    result_refs = flattened_tool_refs(
+        catalog_request=catalog_request_result,
+        search_job=search_job_result,
+        operation_job=operation_job,
+        tracked_item=tracked_item_result,
+    )
     return tool_response(
         "search_observed_item",
         payload.model_dump(),
         {
             "normalized_query": query,
-            "resolution_source": resolution_source or "queued_enrichment",
+            "resolution_source": result_resolution_source,
+            "outcome": outcome_for_results(results, requires_polling=requires_polling),
+            "evidence_level": evidence_level(result_resolution_source, results),
+            "requires_polling": requires_polling,
+            "results_count": len(results),
+            "offers_count": results_offer_count(results),
+            **result_refs,
             "results": results,
-            "catalog_request": catalog_request_payload(catalog_request),
-            "search_job": search_job_payload(search_job, db),
+            "catalog_request": catalog_request_result,
+            "search_job": search_job_result,
             "operation_job": operation_job,
-            "tracked_item": tracked_item_payload(tracked_item),
+            "tracked_item": tracked_item_result,
         },
         confidence,
         warnings,
@@ -606,6 +729,11 @@ def compare_canonical_product_service(canonical_product_id: int, cep: str, db: S
         "ean_gtin": canonical_product.ean_gtin,
         "anvisa_code": canonical_product.anvisa_code,
         "cep": requested_cep,
+        "outcome": "resolved",
+        "evidence_level": evidence_level("canonical_match", [{"offers": offers}]),
+        "requires_polling": False,
+        "results_count": 1,
+        "offers_count": len(offers),
         "resolution_source": "canonical_match",
         "offers": offers,
     }

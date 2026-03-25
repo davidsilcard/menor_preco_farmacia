@@ -1574,6 +1574,12 @@ class ToolHelperTests(unittest.TestCase):
         response = _search_products_service("produto raro xyz", "89254300", session)
 
         self.assertEqual(response["result"]["resolution_source"], "queued_enrichment")
+        self.assertEqual(response["result"]["outcome"], "queued")
+        self.assertEqual(response["result"]["evidence_level"], "none")
+        self.assertTrue(response["result"]["requires_polling"])
+        self.assertIsNotNone(response["result"]["search_job_id"])
+        self.assertIsNotNone(response["result"]["operation_job_id"])
+        self.assertIsNotNone(response["result"]["tracked_item_id"])
         self.assertEqual(response["result"]["search_job"]["status"], "queued")
         self.assertEqual(response["result"]["operation_job"]["job_type"], "process_search_job")
         self.assertEqual(response["result"]["operation_job"]["status"], "queued")
@@ -1588,6 +1594,9 @@ class ToolHelperTests(unittest.TestCase):
         response = _search_products_service("jardiance 25mg", "89254300", session)
 
         self.assertEqual(response["result"]["resolution_source"], "canonical_match")
+        self.assertEqual(response["result"]["outcome"], "resolved")
+        self.assertEqual(response["result"]["evidence_level"], "canonical_only")
+        self.assertFalse(response["result"]["requires_polling"])
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
 
     def test_search_products_service_reuses_source_product_fallback_before_queueing(self):
@@ -1636,6 +1645,9 @@ class ToolHelperTests(unittest.TestCase):
         response = _search_products_service("neosaldina drageas", "89254300", session)
 
         self.assertEqual(response["result"]["resolution_source"], "source_product_fallback")
+        self.assertEqual(response["result"]["outcome"], "resolved")
+        self.assertEqual(response["result"]["evidence_level"], "real_offer")
+        self.assertEqual(response["result"]["offers_count"], 1)
         self.assertIsNone(response["result"]["search_job"])
         self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 20)
 
@@ -1651,6 +1663,12 @@ class ToolHelperTests(unittest.TestCase):
 
         self.assertEqual(response["result"]["items"][0]["resolution_source"], "canonical_match")
         self.assertEqual(response["result"]["items"][1]["resolution_source"], "queued_enrichment")
+        self.assertEqual(response["result"]["outcome"], "partial")
+        self.assertEqual(response["result"]["evidence_level"], "canonical_only")
+        self.assertTrue(response["result"]["requires_polling"])
+        self.assertEqual(response["result"]["results_count"], 1)
+        self.assertEqual(response["result"]["offers_count"], 0)
+        self.assertEqual(len(response["result"]["search_job_ids"]), 1)
         self.assertEqual(
             response["result"]["resolution_source_summary"],
             {"canonical_match": 1, "queued_enrichment": 1},
@@ -1743,6 +1761,9 @@ class ToolHelperTests(unittest.TestCase):
         result = _compare_canonical_product_service(10, "89254300", session)
 
         self.assertEqual(result["cep"], "89254300")
+        self.assertEqual(result["outcome"], "resolved")
+        self.assertEqual(result["evidence_level"], "real_offer")
+        self.assertFalse(result["requires_polling"])
         self.assertEqual(result["resolution_source"], "canonical_match")
         self.assertEqual(len(result["offers"]), 1)
         self.assertEqual(result["offers"][0]["price"], 199.0)
