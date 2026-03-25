@@ -62,6 +62,16 @@ def estimate_overall_confidence(items: list[dict]):
     return min((sum(scores) / len(scores)) / 100, 1.0)
 
 
+def resolution_source_summary(items: list[dict]):
+    counts = {}
+    for item in items:
+        source = item.get("resolution_source")
+        if not source:
+            continue
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
 def build_observed_query(payload: ObservedItemRequest):
     observations = []
     for value in payload.observations:
@@ -286,6 +296,7 @@ def search_products_service(query: str, cep: str, db: Session):
         "search_products",
         {"query": query, "cep": cep},
         {
+            "resolution_source": "canonical_match" if results else "queued_enrichment",
             "results": results,
             "catalog_request": catalog_request_payload(catalog_request),
             "search_job": search_job_payload(search_job, db),
@@ -311,7 +322,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
     for item in payload.items:
         matches = find_matching_canonicals(db, item, limit=1)
         if not matches:
-            comparisons.append({"requested_item": item, "match_found": False, "results": []})
+            comparisons.append({"requested_item": item, "match_found": False, "results": [], "resolution_source": "queued_enrichment"})
             tracked_item = register_tracked_item(db, item, requested_cep, "compare_shopping_list", source_kind="shopping_list", match_confidence=0.0)
             tracked_items.append(tracked_item_payload(tracked_item))
             catalog_request = register_catalog_request(db, item, requested_cep, "compare_shopping_list")
@@ -339,6 +350,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
                 "best_offer": best_pricing_offer(offers),
                 "data_freshness": (best_pricing_offer(offers) or {}).get("data_freshness"),
                 "offers": offers,
+                "resolution_source": "canonical_match",
                 "availability_summary": item_availability_summary({"match_found": True, "best_offer": best_pricing_offer(offers), "offers": offers}),
             }
         )
@@ -359,6 +371,7 @@ def compare_shopping_list_service(payload: ShoppingListRequest, db: Session):
         payload.model_dump(),
         {
             **build_basket_result(comparisons),
+            "resolution_source_summary": resolution_source_summary(comparisons),
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
             "operation_jobs": operation_jobs,
@@ -389,7 +402,17 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
     for item in payload.items:
         matches = find_matching_canonicals(db, item.description, limit=1)
         if not matches:
-            comparisons.append({"invoice_item": item.description, "paid_price": item.paid_price, "quantity": item.quantity, "match_found": False, "potential_savings": None, "results": []})
+            comparisons.append(
+                {
+                    "invoice_item": item.description,
+                    "paid_price": item.paid_price,
+                    "quantity": item.quantity,
+                    "match_found": False,
+                    "potential_savings": None,
+                    "results": [],
+                    "resolution_source": "queued_enrichment",
+                }
+            )
             tracked_item = register_tracked_item(db, item.description, requested_cep, "compare_invoice_items", source_kind="invoice_item", match_confidence=0.0)
             tracked_items.append(tracked_item_payload(tracked_item))
             catalog_request = register_catalog_request(db, item.description, requested_cep, "compare_invoice_items")
@@ -424,6 +447,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
                 "data_freshness": (best_offer or {}).get("data_freshness"),
                 "potential_savings": potential_savings,
                 "offers": offers,
+                "resolution_source": "canonical_match",
                 "availability_summary": item_availability_summary({"match_found": True, "best_offer": best_offer, "offers": offers}),
             }
         )
@@ -443,6 +467,7 @@ def compare_invoice_items_service(payload: InvoiceComparisonRequest, db: Session
         payload.model_dump(),
         {
             "items": comparisons,
+            "resolution_source_summary": resolution_source_summary(comparisons),
             "total_potential_savings": total_potential_savings,
             "catalog_requests": catalog_requests,
             "search_jobs": search_jobs,
@@ -470,6 +495,7 @@ def compare_receipt_service(payload: ReceiptComparisonRequest, db: Session):
             "captured_at": payload.captured_at,
             **build_basket_result(items),
             "summary": summary,
+            "resolution_source_summary": resolution_source_summary(items),
             "catalog_requests": invoice_result["result"].get("catalog_requests", []),
             "search_jobs": invoice_result["result"].get("search_jobs", []),
             "operation_jobs": invoice_result["result"].get("operation_jobs", []),
@@ -533,6 +559,7 @@ def search_observed_item_service(payload: ObservedItemRequest, db: Session):
         payload.model_dump(),
         {
             "normalized_query": query,
+            "resolution_source": "canonical_match" if results else "queued_enrichment",
             "results": results,
             "catalog_request": catalog_request_payload(catalog_request),
             "search_job": search_job_payload(search_job, db),
@@ -566,6 +593,7 @@ def compare_canonical_product_service(canonical_product_id: int, cep: str, db: S
         "ean_gtin": canonical_product.ean_gtin,
         "anvisa_code": canonical_product.anvisa_code,
         "cep": requested_cep,
+        "resolution_source": "canonical_match",
         "offers": offers,
     }
 

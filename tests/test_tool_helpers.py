@@ -71,6 +71,7 @@ from src.services.scheduled_collection import (
 )
 from src.services.matching import ProductMatcher
 from src.services.tool_models import ObservedItemRequest
+from src.services.tool_models import ShoppingListRequest
 from src.services.tool_use import (
     availability_warnings as _availability_warnings,
     basket_availability_summary as _basket_availability_summary,
@@ -79,8 +80,10 @@ from src.services.tool_use import (
     build_observed_query as _build_observed_query,
     build_price_summary as _build_price_summary,
     compare_canonical_product_service as _compare_canonical_product_service,
+    compare_shopping_list_service as _compare_shopping_list_service,
     estimate_overall_confidence as _estimate_overall_confidence,
     item_availability_summary as _item_availability_summary,
+    search_observed_item_service as _search_observed_item_service,
     search_products_service as _search_products_service,
     tool_response as _tool_response,
 )
@@ -1570,11 +1573,52 @@ class ToolHelperTests(unittest.TestCase):
 
         response = _search_products_service("produto raro xyz", "89254300", session)
 
+        self.assertEqual(response["result"]["resolution_source"], "queued_enrichment")
         self.assertEqual(response["result"]["search_job"]["status"], "queued")
         self.assertEqual(response["result"]["operation_job"]["job_type"], "process_search_job")
         self.assertEqual(response["result"]["operation_job"]["status"], "queued")
         self.assertEqual(response["result"]["operation_job"]["payload"]["search_job_id"], response["result"]["search_job"]["job_id"])
         self.assertEqual(len(session.operation_jobs), 1)
+
+    def test_search_products_service_exposes_canonical_resolution_source(self):
+        session = _FakeSession([])
+        canonical = CanonicalProduct(id=10, canonical_name="Jardiance 25mg", normalized_name="jardiance 25mg")
+        session.canonicals = [canonical]
+
+        response = _search_products_service("jardiance 25mg", "89254300", session)
+
+        self.assertEqual(response["result"]["resolution_source"], "canonical_match")
+        self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
+
+    def test_compare_shopping_list_service_exposes_resolution_source_summary(self):
+        session = _FakeSession([])
+        canonical = CanonicalProduct(id=10, canonical_name="Jardiance 25mg", normalized_name="jardiance 25mg")
+        session.canonicals = [canonical]
+
+        response = _compare_shopping_list_service(
+            ShoppingListRequest(cep="89254300", items=["jardiance 25mg", "produto raro xyz"]),
+            session,
+        )
+
+        self.assertEqual(response["result"]["items"][0]["resolution_source"], "canonical_match")
+        self.assertEqual(response["result"]["items"][1]["resolution_source"], "queued_enrichment")
+        self.assertEqual(
+            response["result"]["resolution_source_summary"],
+            {"canonical_match": 1, "queued_enrichment": 1},
+        )
+
+    def test_search_observed_item_service_exposes_resolution_source(self):
+        session = _FakeSession([])
+        canonical = CanonicalProduct(id=10, canonical_name="Clonazepam Gotas 20ml", normalized_name="clonazepam gotas 20ml")
+        session.canonicals = [canonical]
+
+        response = _search_observed_item_service(
+            ObservedItemRequest(cep="89254300", observations=["Clonazepam gotas 20ml"], source_type="free_text"),
+            session,
+        )
+
+        self.assertEqual(response["result"]["resolution_source"], "canonical_match")
+        self.assertEqual(response["result"]["results"][0]["canonical_product_id"], 10)
 
     def test_compare_canonical_product_service_filters_offers_by_cep(self):
         session = _FakeSession([])
@@ -1599,6 +1643,7 @@ class ToolHelperTests(unittest.TestCase):
         result = _compare_canonical_product_service(10, "89254300", session)
 
         self.assertEqual(result["cep"], "89254300")
+        self.assertEqual(result["resolution_source"], "canonical_match")
         self.assertEqual(len(result["offers"]), 1)
         self.assertEqual(result["offers"][0]["price"], 199.0)
 
