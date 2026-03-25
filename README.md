@@ -98,6 +98,21 @@ Regra de uso:
 - `queued_enrichment` nao e resposta final; a LLM deve informar que a busca foi enfileirada
 - `searched_no_results` deve ser tratado como ausencia real de resultado apos processamento, nao como fila pendente
 
+## Robustez de coleta
+
+As coletas em lote agora degradam de forma controlada quando um scraper rejeita um conjunto grande de termos.
+
+Regra atual:
+
+- a coleta tenta primeiro o batch normal de termos
+- se o scraper falhar no batch, o sistema quebra em lotes menores conforme `SCRAPER_TERM_BATCH_SIZE`
+- se ainda falhar, tenta termo individual
+
+Objetivo:
+
+- evitar perder o lote inteiro por causa de um termo problematico
+- melhorar frescor de preco mesmo quando uma farmacia rejeita buscas maiores
+
 ## Arquitetura
 
 O modelo de dados foi desenhado para evitar comparacao por texto puro.

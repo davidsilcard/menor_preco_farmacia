@@ -1,5 +1,3 @@
-import asyncio
-import inspect
 from collections import defaultdict
 from datetime import UTC, datetime
 import logging
@@ -9,6 +7,7 @@ from src.core.config import settings
 from src.core.logging import get_logger, log_event
 from src.models.base import SessionLocal, TrackedItemByCep
 from src.scrapers.base import BaseScraper
+from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scraper_registry import SCRAPER_REGISTRY
 
 ACTIVE_DAYS = 30
@@ -103,30 +102,6 @@ def build_scheduled_collection_plan(cep: str | None = None):
         return _plan_payload(grouped)
 
 
-def _run_scraper_for_terms(scraper, terms: list[str], cep: str):
-    original_terms = list(getattr(scraper, "search_terms", []) or [])
-    original_cep = getattr(scraper, "cep", None)
-    scraper.search_terms = list(terms)
-    scraper.set_cep(cep)
-    try:
-        scrape_method = scraper.scrape
-        if inspect.iscoroutinefunction(scrape_method):
-            products = asyncio.run(scrape_method())
-        else:
-            products = scrape_method()
-        products = products or []
-        if products:
-            scraper.save_to_db(products)
-        return {
-            "status": "completed",
-            "products_found": len(products),
-        }
-    finally:
-        scraper.search_terms = original_terms
-        if original_cep:
-            scraper.cep = original_cep
-
-
 def _collection_run_status(scraper_results: list[dict]):
     statuses = {result.get("status") or "failed" for result in scraper_results}
     if not statuses or statuses == {"skipped"}:
@@ -199,7 +174,12 @@ def run_scheduled_collection(cep: str | None = None):
 
                 scraper = scraper_cls()
                 try:
-                    result = _run_scraper_for_terms(scraper, search_terms, plan_cep)
+                    result = run_scraper_terms_with_fallback(
+                        scraper,
+                        search_terms,
+                        plan_cep,
+                        batch_size=settings.SCRAPER_TERM_BATCH_SIZE,
+                    )
                     scraper_results.append(
                         {
                             "pharmacy_slug": scraper_slug,

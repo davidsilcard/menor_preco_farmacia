@@ -64,6 +64,7 @@ from src.services.ops import live_health_payload as _live_health_payload
 from src.services.ops import ops_metrics_payload as _ops_metrics_payload
 from src.services.ops import readiness_health_payload as _readiness_health_payload
 from src.services.retention import purge_expired_operational_data_in_session as _purge_expired_operational_data_in_session
+from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scheduled_collection import (
     _collection_run_status,
     _collection_search_term,
@@ -303,6 +304,35 @@ class _FakeSession:
 
     def close(self):
         self.closed = True
+
+
+class _FallbackChunkScraper:
+    def __init__(self):
+        self.search_terms = []
+        self.cep = None
+        self.saved_products = []
+        self.calls = []
+
+    def set_cep(self, cep):
+        self.cep = cep
+
+    def scrape(self):
+        current_terms = list(self.search_terms)
+        self.calls.append(current_terms)
+        if len(current_terms) > 1:
+            raise RuntimeError("batch rejected")
+        term = current_terms[0]
+        return [
+            {
+                "source_sku": f"sku-{term}",
+                "raw_name": f"{term} 500mg",
+                "normalized_name": f"{term} 500mg",
+                "price": 10.0,
+            }
+        ]
+
+    def save_to_db(self, products):
+        self.saved_products.extend(products)
 
 
 class ToolHelperTests(unittest.TestCase):
@@ -1426,6 +1456,40 @@ class ToolHelperTests(unittest.TestCase):
             scrape_priority=100,
         )
         self.assertEqual(_collection_search_term(item), "novalgina")
+
+    def test_run_scraper_terms_with_fallback_retries_individual_terms_after_batch_failure(self):
+        scraper = _FallbackChunkScraper()
+
+        result = run_scraper_terms_with_fallback(
+            scraper,
+            ["glifage 500mg", "jardiance 25mg"],
+            "89254300",
+            batch_size=5,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["fallback_applied"])
+        self.assertEqual(result["products_found"], 2)
+        self.assertEqual(result["failed_terms"], [])
+        self.assertEqual(scraper.calls[0], ["glifage 500mg", "jardiance 25mg"])
+        self.assertEqual(scraper.calls[1], ["glifage 500mg"])
+        self.assertEqual(scraper.calls[2], ["jardiance 25mg"])
+
+    def test_run_scraper_terms_with_fallback_honors_batch_size_before_individual_retry(self):
+        scraper = _FallbackChunkScraper()
+
+        result = run_scraper_terms_with_fallback(
+            scraper,
+            ["a", "b", "c"],
+            "89254300",
+            batch_size=2,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(scraper.calls[0], ["a", "b"])
+        self.assertEqual(scraper.calls[1], ["a"])
+        self.assertEqual(scraper.calls[2], ["b"])
+        self.assertEqual(scraper.calls[3], ["c"])
 
     def test_collection_run_status_marks_partial_success_when_any_scraper_completes(self):
         status = _collection_run_status(

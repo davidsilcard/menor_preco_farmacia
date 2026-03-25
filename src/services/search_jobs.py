@@ -1,5 +1,3 @@
-import asyncio
-import inspect
 import logging
 from datetime import UTC, datetime
 
@@ -16,6 +14,7 @@ from src.services.catalog_queries import (
     preferred_search_terms,
 )
 from src.services.demand_tracking import sync_tracked_item_with_search_results
+from src.services.scraper_execution import run_scraper_terms_with_fallback
 from src.services.scraper_registry import SCRAPER_REGISTRY
 from src.services.tool_use import item_availability_summary
 
@@ -71,30 +70,6 @@ def _job_completion_status(scraper_results: list[dict]):
     if failed_count == len(scraper_results):
         return "failed"
     return "partial_success"
-
-
-def _run_scraper_for_terms(scraper, terms: list[str], cep: str):
-    original_terms = list(getattr(scraper, "search_terms", []) or [])
-    original_cep = getattr(scraper, "cep", None)
-    scraper.search_terms = list(terms)
-    scraper.set_cep(cep)
-    try:
-        scrape_method = scraper.scrape
-        if inspect.iscoroutinefunction(scrape_method):
-            products = asyncio.run(scrape_method())
-        else:
-            products = scrape_method()
-        products = products or []
-        if products:
-            scraper.save_to_db(products)
-        return {
-            "products_found": len(products),
-            "status": "completed",
-        }
-    finally:
-        scraper.search_terms = original_terms
-        if original_cep:
-            scraper.cep = original_cep
 
 
 def _job_search_result_payload(session, query: str, cep: str):
@@ -210,7 +185,12 @@ def process_search_job(job_id: int | None = None):
                     continue
                 scraper = scraper_cls()
                 try:
-                    result = _run_scraper_for_terms(scraper, search_terms, job.cep)
+                    result = run_scraper_terms_with_fallback(
+                        scraper,
+                        search_terms,
+                        job.cep,
+                        batch_size=settings.SCRAPER_TERM_BATCH_SIZE,
+                    )
                     scraper_results.append(
                         {
                             "pharmacy_slug": scraper_slug,
