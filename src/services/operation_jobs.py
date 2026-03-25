@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func
 
+from src.core.config import settings
 from src.core.logging import get_logger, log_event
 from src.models.base import OperationJob, SearchJob, SessionLocal
 
@@ -97,7 +98,7 @@ def enqueue_operation_job(db, *, job_type: str, requested_by: str, payload: dict
         db.refresh(existing)
         log_event(
             LOGGER,
-            logging.INFO,
+            logging.INFO if settings.LOG_OPERATION_JOB_REUSED else logging.DEBUG,
             "operation_job_reused",
             operation_job_id=existing.id,
             job_type=job_type,

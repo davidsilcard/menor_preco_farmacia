@@ -265,6 +265,26 @@ Contrato dos arquivos:
 
 - `data/reference/README.md`
 
+## Logs e modo de teste
+
+Para reduzir ruido durante testes locais:
+
+- `UVICORN_ACCESS_LOG=false`: oculta os logs de access do Uvicorn
+- `LOG_OPERATION_JOB_REUSED=false`: evita repetir eventos de reuse de fila em nivel `INFO`
+
+Exemplo de uso no `.env`:
+
+```env
+UVICORN_ACCESS_LOG=false
+LOG_OPERATION_JOB_REUSED=false
+```
+
+Subida local:
+
+```bash
+uv run python -m src.main
+```
+
 ### Efeito pratico da camada regulatoria
 
 `DCB`, registros regulatorios e `CMED` nao ficam isolados em backoffice.

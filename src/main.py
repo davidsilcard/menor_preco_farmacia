@@ -351,4 +351,9 @@ def tool_search_observed_item(payload: ObservedItemRequest = Body(...), db: Sess
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=settings.PORT)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=settings.PORT,
+        access_log=settings.UVICORN_ACCESS_LOG,
+    )
