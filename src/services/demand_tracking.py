@@ -227,6 +227,7 @@ def search_job_payload(job: SearchJob | None, db: Session | None = None):
     if not job:
         return None
     position = job.position_hint
+    search_results = (job.result_payload or {}).get("search_results") or {}
     if db and job.status in {"queued", "processing"}:
         position = queued_job_position(db, job.id)
     return {
@@ -241,6 +242,7 @@ def search_job_payload(job: SearchJob | None, db: Session | None = None):
         "position": position,
         "eta_seconds": job.eta_seconds,
         "catalog_request_id": job.catalog_request_id,
+        "resolution_source": search_results.get("result_origin"),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "started_at": job.started_at,

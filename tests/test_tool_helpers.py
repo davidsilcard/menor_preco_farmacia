@@ -1549,6 +1549,7 @@ class ToolHelperTests(unittest.TestCase):
         job = _register_search_job(session, "produto raro xyz", "89254300", "search_products")
         job.status = "partial_success"
         job.result_payload = {
+            "search_results": {"result_origin": "source_product_fallback"},
             "warnings": [
                 {
                     "code": "partial_scraper_failure",
@@ -1561,6 +1562,7 @@ class ToolHelperTests(unittest.TestCase):
         payload = _search_job_payload(job, session)
 
         self.assertEqual(payload["status"], "partial_success")
+        self.assertEqual(payload["resolution_source"], "source_product_fallback")
         self.assertEqual(payload["warnings"][0]["code"], "partial_scraper_failure")
 
     def test_search_products_service_enqueues_operation_job_on_first_miss(self):
