@@ -22,7 +22,7 @@ services:
 
   pricing-core-api:
     build:
-      context: ..
+      context: ../services/pricing-core
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
@@ -44,7 +44,7 @@ services:
 
   pricing-core-worker:
     build:
-      context: ..
+      context: ../services/pricing-core
       dockerfile: Dockerfile
     restart: unless-stopped
     command: ["uv", "run", "python", "-m", "src.worker_main"]
@@ -60,7 +60,7 @@ services:
 
   pricing-core-scheduler:
     build:
-      context: ..
+      context: ../services/pricing-core
       dockerfile: Dockerfile
     command: ["uv", "run", "python", "-m", "src.scheduler_main"]
     profiles: ["manual"]

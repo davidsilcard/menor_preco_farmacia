@@ -31,8 +31,15 @@ Nao conversa diretamente com `pricing-core`.
 
 Arquivos de compose, proxy, deploy e operacao local/producao.
 
-## Estado de transicao
+## Estado atual
 
-Nesta primeira etapa, o codigo executavel do `pricing-core` ainda fica na raiz do repositorio.
-Os diretorios do monorepo sao criados agora para fixar as fronteiras arquiteturais.
-A movimentacao fisica completa para `services/pricing-core` fica para a proxima rodada.
+O backend foi movido fisicamente para `services/pricing-core`.
+
+Na raiz permanecem:
+
+- `infra/`
+- `apps/`
+- `services/assistant-service`
+- documentacao de topo do monorepo
+
+O `.env` principal continua centralizado na raiz para a fase 1, porque o compose sobe os servicos a partir desse ponto.

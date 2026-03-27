@@ -1,6 +1,8 @@
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from src.core.config import settings
 from src.core.logging import get_logger, log_event
 from src.models.base import CatalogRequest, SearchJob, SessionLocal
@@ -139,27 +141,75 @@ def _complete_job(session, job: SearchJob, *, status: str, result_payload=None, 
     return job
 
 
+def _session_supports_atomic_claim(session) -> bool:
+    return not hasattr(session, "search_jobs")
+
+
+def _selected_job_id(result):
+    scalar_one_or_none = getattr(result, "scalar_one_or_none", None)
+    if callable(scalar_one_or_none):
+        return scalar_one_or_none()
+
+    scalar = getattr(result, "scalar", None)
+    if callable(scalar):
+        return scalar()
+    return None
+
+
+def _mark_search_job_processing(session, job: SearchJob):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    job.status = "processing"
+    job.started_at = job.started_at or now
+    job.updated_at = now
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def _claim_next_search_job(session):
+    if _session_supports_atomic_claim(session):
+        statement = (
+            select(SearchJob.id)
+            .where(SearchJob.status == "queued")
+            .order_by(SearchJob.created_at.asc(), SearchJob.id.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        claimed_job_id = _selected_job_id(session.execute(statement))
+        if claimed_job_id is None:
+            return None
+        claimed_job = session.get(SearchJob, claimed_job_id)
+        if claimed_job is None:
+            return None
+        return _mark_search_job_processing(session, claimed_job)
+
+    queued_job = (
+        session.query(SearchJob)
+        .filter(SearchJob.status == "queued")
+        .order_by(SearchJob.created_at.asc(), SearchJob.id.asc())
+        .first()
+    )
+    if not queued_job:
+        return None
+    return _mark_search_job_processing(session, queued_job)
+
+
 def process_search_job(job_id: int | None = None):
     with SessionLocal() as session:
-        query = session.query(SearchJob)
         if job_id is not None:
-            query = query.filter(SearchJob.id == job_id)
+            job = session.query(SearchJob).filter(SearchJob.id == job_id).first()
+            if not job:
+                return None
         else:
-            query = query.filter(SearchJob.status == "queued").order_by(SearchJob.created_at.asc(), SearchJob.id.asc())
-
-        job = query.first()
-        if not job:
-            return None
+            job = _claim_next_search_job(session)
+            if not job:
+                return None
 
         if job.status not in {"queued", "processing"}:
             return job
 
-        now = datetime.now(UTC).replace(tzinfo=None)
-        job.status = "processing"
-        job.started_at = job.started_at or now
-        job.updated_at = now
-        session.commit()
-        session.refresh(job)
+        if job.status == "queued":
+            job = _mark_search_job_processing(session, job)
         log_event(
             LOGGER,
             logging.INFO,

@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from src.core.config import settings
 from src.core.logging import get_logger, log_event
@@ -240,6 +240,59 @@ def _default_executors():
     }
 
 
+def _session_supports_atomic_claim(session) -> bool:
+    return not hasattr(session, "operation_jobs")
+
+
+def _selected_job_id(result):
+    scalar_one_or_none = getattr(result, "scalar_one_or_none", None)
+    if callable(scalar_one_or_none):
+        return scalar_one_or_none()
+
+    scalar = getattr(result, "scalar", None)
+    if callable(scalar):
+        return scalar()
+    return None
+
+
+def _mark_operation_job_processing(session, job: OperationJob):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    job.status = "processing"
+    job.started_at = job.started_at or now
+    job.updated_at = now
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def _claim_next_operation_job(session):
+    if _session_supports_atomic_claim(session):
+        statement = (
+            select(OperationJob.id)
+            .where(OperationJob.status == "queued")
+            .order_by(OperationJob.created_at.asc(), OperationJob.id.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        claimed_job_id = _selected_job_id(session.execute(statement))
+        if claimed_job_id is None:
+            return None
+        claimed_job = session.get(OperationJob, claimed_job_id)
+        if claimed_job is None:
+            return None
+        return _mark_operation_job_processing(session, claimed_job)
+
+    queued_job = (
+        session.query(OperationJob)
+        .filter(OperationJob.status == "queued")
+        .order_by(OperationJob.created_at.asc(), OperationJob.id.asc())
+        .first()
+    )
+    if not queued_job:
+        return None
+    return _mark_operation_job_processing(session, queued_job)
+
+
 def _complete_operation_job(session, job: OperationJob, *, status: str, result_payload=None, error_message: str | None = None):
     now = datetime.now(UTC).replace(tzinfo=None)
     job.status = status
@@ -256,15 +309,14 @@ def process_operation_job(job_id: int | None = None, *, session_factory=None, ex
     session_factory = session_factory or SessionLocal
     executors = executors or _default_executors()
     with session_factory() as session:
-        query = session.query(OperationJob)
         if job_id is not None:
-            query = query.filter(OperationJob.id == job_id)
+            job = session.query(OperationJob).filter(OperationJob.id == job_id).first()
+            if not job:
+                return None
         else:
-            query = query.filter(OperationJob.status == "queued").order_by(OperationJob.created_at.asc(), OperationJob.id.asc())
-
-        job = query.first()
-        if not job:
-            return None
+            job = _claim_next_operation_job(session)
+            if not job:
+                return None
 
         if job.status not in {"queued", "processing"}:
             return job
@@ -278,12 +330,8 @@ def process_operation_job(job_id: int | None = None, *, session_factory=None, ex
                 error_message=f"Tipo de operation job nao suportado: {job.job_type}",
             )
 
-        now = datetime.now(UTC).replace(tzinfo=None)
-        job.status = "processing"
-        job.started_at = job.started_at or now
-        job.updated_at = now
-        session.commit()
-        session.refresh(job)
+        if job.status == "queued":
+            job = _mark_operation_job_processing(session, job)
         log_event(
             LOGGER,
             logging.INFO,
