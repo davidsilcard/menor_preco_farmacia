@@ -629,7 +629,7 @@ uv run playwright install firefox
 
 Configure `.env` com:
 
-- `CEP=89254300`
+- `CEP=` opcional, apenas como fallback de bootstrap local
 - `SCHEDULED_COLLECTION_SLOTS=08:00,15:00`
 - `SCHEDULED_COLLECTION_SLOT_WINDOW_MINUTES=120`
 - `PRICE_RETENTION_DAYS=90`
@@ -646,6 +646,12 @@ O projeto agora trabalha com um ciclo operacional unico:
 2. executa a coleta dos itens monitorados por `CEP` quando estiver na janela
 3. aplica retencao dos `price_snapshots` com mais de `90` dias
 4. devolve relatorio consolidado
+
+Observacao:
+
+- o runtime operacional e `request-scoped` por `CEP`
+- `CEP` em `.env` nao define mais qual `CEP` o sistema "roda"
+- quando definido, esse valor serve apenas como fallback local/bootstrap
 
 ### Comandos uteis
 
@@ -807,7 +813,7 @@ POSTGRES_USER=admin
 POSTGRES_PASSWORD=senha
 DB_HOST=127.0.0.1
 DB_PORT=5432
-CEP=89254300
+CEP=
 PORT=8001
 PANVEL_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno
 FARMASESI_SEARCH_TERMS=dipirona,paracetamol,ibuprofeno

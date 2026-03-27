@@ -54,7 +54,7 @@ class BaseScraper:
 
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.cep = self.normalize_cep(settings.CEP)
+        self.cep = None
         self.logger = get_logger(self.__class__.__module__)
 
     @staticmethod

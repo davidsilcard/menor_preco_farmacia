@@ -1,4 +1,5 @@
 import os
+import re
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -11,7 +12,7 @@ DEFAULT_DB_NAME = "precos-farmacia"
 DEFAULT_DB_USER = "admin"
 DEFAULT_DB_PASSWORD = "password"
 DEFAULT_PORT = 8001
-DEFAULT_CEP = "89254300"
+DEFAULT_CEP = ""
 DEFAULT_SEARCH_TERMS = "dipirona,paracetamol,ibuprofeno"
 DEFAULT_SCHEDULED_COLLECTION_MAX_ITEMS_PER_CEP = 50
 DEFAULT_SCHEDULED_COLLECTION_SLOTS = "08:00,15:00"
@@ -38,6 +39,11 @@ def _env_int(name: str, default: int) -> int:
 def _env_bool(name: str, default: bool = False) -> bool:
     default_value = "true" if default else "false"
     return os.getenv(name, default_value).lower() == "true"
+
+
+def _optional_normalized_cep(value: str | None) -> str | None:
+    normalized = re.sub(r"\D", "", value or "")
+    return normalized if len(normalized) == 8 else None
 
 
 class Settings(BaseSettings):
@@ -88,6 +94,10 @@ class Settings(BaseSettings):
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.POSTGRES_DB}"
+
+    @property
+    def DEFAULT_RUNTIME_CEP(self) -> str | None:
+        return _optional_normalized_cep(self.CEP)
 
 
 settings = Settings()

@@ -29,17 +29,20 @@ def live_health_payload():
 
 def _config_readiness_payload():
     issues = []
-    normalized_cep = normalize_cep(settings.CEP)
-    if len(normalized_cep) != 8:
-        issues.append("CEP configurado invalido; esperado CEP com 8 digitos.")
+    configured_default_cep = settings.DEFAULT_RUNTIME_CEP
+    raw_runtime_cep = (settings.CEP or "").strip()
+    if raw_runtime_cep and configured_default_cep is None:
+        issues.append("CEP padrao opcional invalido; quando definido, deve ter 8 digitos.")
     if settings.PRICE_RETENTION_DAYS <= 0:
         issues.append("PRICE_RETENTION_DAYS deve ser maior que zero.")
     if settings.INTERNAL_API_AUTH_ENABLED and not (settings.INTERNAL_API_TOKEN or "").strip():
         issues.append("INTERNAL_API_TOKEN deve ser definido quando INTERNAL_API_AUTH_ENABLED=true.")
     return {
         "status": "ok" if not issues else "error",
-        "active_cep": settings.CEP,
-        "configured_default_cep": settings.CEP,
+        "active_cep": None,
+        "configured_default_cep": configured_default_cep,
+        "runtime_cep_mode": "request_scoped",
+        "default_cep_configured": configured_default_cep is not None,
         "internal_api_auth_enabled": settings.INTERNAL_API_AUTH_ENABLED,
         "issues": issues,
     }
@@ -252,8 +255,9 @@ def ops_health_payload(db, cep: str | None = None):
 
     return {
         "status": overall_status,
-        "active_cep": settings.CEP,
-        "configured_default_cep": settings.CEP,
+        "active_cep": normalized_cep,
+        "configured_default_cep": settings.DEFAULT_RUNTIME_CEP,
+        "runtime_cep_mode": "request_scoped",
         "requested_cep": normalized_cep,
         "queue": queue,
         "operation_jobs": operation_queue,
@@ -371,8 +375,9 @@ def ops_metrics_payload(db, cep: str | None = None):
             structural_conflict_count += 1
 
     return {
-        "active_cep": settings.CEP,
-        "configured_default_cep": settings.CEP,
+        "active_cep": normalized_cep,
+        "configured_default_cep": settings.DEFAULT_RUNTIME_CEP,
+        "runtime_cep_mode": "request_scoped",
         "requested_cep": normalized_cep,
         "catalog": {
             "canonical_products": canonical_products_count,

@@ -144,8 +144,9 @@ def read_root():
     return {
         "message": "Pricing Core de Farmacias Ativo",
         "regiao": "Jaragua do Sul - SC",
-        "active_cep": settings.CEP,
-        "configured_default_cep": settings.CEP,
+        "active_cep": None,
+        "configured_default_cep": settings.DEFAULT_RUNTIME_CEP,
+        "runtime_cep_mode": "request_scoped",
         "model": "source_product + canonical_product + price_snapshot",
         "comparison_endpoints": ["/comparison/canonical-products", "/comparison/canonical/{id}"],
         "health_endpoints": ["/health/live", "/health/ready"],

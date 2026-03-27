@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 import src.scrapers.base as scraper_base_module
 from src.mcp_server import _tool_definitions as _mcp_tool_definitions
+from src.core.config import settings
 from src.main import (
     _ops_health_payload,
     _pharmacy_metrics,
@@ -2745,7 +2746,7 @@ class ToolHelperTests(unittest.TestCase):
             ops_module.build_latest_price_map = original_builder
 
         self.assertEqual(payload["requested_cep"], "89254300")
-        self.assertEqual(payload["configured_default_cep"], "89254300")
+        self.assertEqual(payload["configured_default_cep"], settings.DEFAULT_RUNTIME_CEP)
         self.assertEqual(payload["catalog"]["source_products"], 1)
         self.assertEqual(payload["catalog_requests"]["total"], 1)
         self.assertEqual(payload["catalog_requests"]["resolution_source_counts"], {"pending": 1})
@@ -2818,7 +2819,7 @@ class ToolHelperTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["checks"]["database"]["status"], "ok")
         self.assertEqual(payload["checks"]["config"]["status"], "ok")
-        self.assertEqual(payload["checks"]["config"]["configured_default_cep"], "89254300")
+        self.assertEqual(payload["checks"]["config"]["configured_default_cep"], settings.DEFAULT_RUNTIME_CEP)
 
     def test_scraper_health_payload_marks_failed_latest_run_as_degraded(self):
         session = _FakeSession([])
