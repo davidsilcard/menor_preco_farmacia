@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from src.api.deps import get_db
+from src.api.internal_auth import require_internal_api_auth
 from src.models.base import ScrapeRun, SearchJob, SessionLocal
 from src.services.catalog_queries import normalize_cep
 from src.services.external_health import page_health_payload, scraper_health_payload
@@ -25,6 +26,7 @@ from src.services.ops import (
 from src.services.operational_cycle import collection_schedule_status
 
 router = APIRouter()
+internal_router = APIRouter(dependencies=[Depends(require_internal_api_auth)])
 
 
 @router.get("/health/live")
@@ -32,7 +34,7 @@ def health_live():
     return live_health_payload()
 
 
-@router.get("/health/ready")
+@internal_router.get("/health/ready")
 def health_ready(response: Response):
     with SessionLocal() as db:
         payload = readiness_health_payload(db)
@@ -41,7 +43,7 @@ def health_ready(response: Response):
     return payload
 
 
-@router.get("/ops/collection-plan")
+@internal_router.get("/ops/collection-plan")
 def get_collection_plan(cep: str | None = Query(None)):
     from src.services.scheduled_collection import build_scheduled_collection_plan
 
@@ -49,25 +51,25 @@ def get_collection_plan(cep: str | None = Query(None)):
     return build_scheduled_collection_plan(normalized_cep)
 
 
-@router.get("/ops/schedule")
+@internal_router.get("/ops/schedule")
 def get_collection_schedule():
     return collection_schedule_status()
 
 
-@router.get("/ops/health")
+@internal_router.get("/ops/health")
 def ops_health(cep: str | None = Query(None)):
     with SessionLocal() as db:
         return ops_health_payload(db, normalize_cep(cep) if cep else None)
 
 
-@router.get("/ops/health/scrapers")
+@internal_router.get("/ops/health/scrapers")
 def ops_scraper_health(cep: str | None = Query(None)):
     with SessionLocal() as db:
         normalized_cep = normalize_cep(cep) if cep else None
         return scraper_health_payload(db, cep=normalized_cep)
 
 
-@router.get("/ops/health/pages")
+@internal_router.get("/ops/health/pages")
 def ops_page_health(
     sample_term: str = Query("dipirona", min_length=2),
     timeout_seconds: int = Query(8, ge=1, le=30),
@@ -75,7 +77,7 @@ def ops_page_health(
     return page_health_payload(sample_term=sample_term, timeout_seconds=timeout_seconds)
 
 
-@router.get("/ops/scrape-runs")
+@internal_router.get("/ops/scrape-runs")
 def list_scrape_runs(
     cep: str | None = Query(None),
     limit: int = Query(20, ge=1, le=200),
@@ -89,13 +91,13 @@ def list_scrape_runs(
         return [scrape_run_payload(run) for run in runs]
 
 
-@router.get("/ops/metrics")
+@internal_router.get("/ops/metrics")
 def ops_metrics(cep: str | None = Query(None)):
     with SessionLocal() as db:
         return ops_metrics_payload(db, normalize_cep(cep) if cep else None)
 
 
-@router.get("/ops/jobs")
+@internal_router.get("/ops/jobs")
 def get_operation_jobs(
     cep: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -105,7 +107,7 @@ def get_operation_jobs(
     return list_operation_jobs(db, limit=limit, offset=offset, cep=normalize_cep(cep) if cep else None)
 
 
-@router.get("/ops/jobs/{operation_job_id}")
+@internal_router.get("/ops/jobs/{operation_job_id}")
 def get_operation_job_endpoint(operation_job_id: int, cep: str | None = Query(None), db: Session = Depends(get_db)):
     job = get_operation_job(db, operation_job_id, cep=normalize_cep(cep) if cep else None)
     if not job:
@@ -113,7 +115,7 @@ def get_operation_job_endpoint(operation_job_id: int, cep: str | None = Query(No
     return operation_job_payload(job)
 
 
-@router.post("/ops/search-jobs/process-next", status_code=status.HTTP_202_ACCEPTED)
+@internal_router.post("/ops/search-jobs/process-next", status_code=status.HTTP_202_ACCEPTED)
 def process_next_search_job_endpoint(db: Session = Depends(get_db)):
     job = enqueue_operation_job(
         db,
@@ -124,7 +126,7 @@ def process_next_search_job_endpoint(db: Session = Depends(get_db)):
     return operation_job_payload(job)
 
 
-@router.post("/ops/collections/run", status_code=status.HTTP_202_ACCEPTED)
+@internal_router.post("/ops/collections/run", status_code=status.HTTP_202_ACCEPTED)
 def run_scheduled_collection_endpoint(cep: str | None = Query(None), db: Session = Depends(get_db)):
     normalized_cep = normalize_cep(cep) if cep else None
     job = enqueue_operation_job(
@@ -136,7 +138,7 @@ def run_scheduled_collection_endpoint(cep: str | None = Query(None), db: Session
     return operation_job_payload(job)
 
 
-@router.post("/ops/cycle/run", status_code=status.HTTP_202_ACCEPTED)
+@internal_router.post("/ops/cycle/run", status_code=status.HTTP_202_ACCEPTED)
 def run_operational_cycle_endpoint(
     cep: str | None = Query(None),
     force_collection: bool = Query(False),
@@ -152,7 +154,7 @@ def run_operational_cycle_endpoint(
     return operation_job_payload(job)
 
 
-@router.post("/ops/search-jobs/{job_id}/process", status_code=status.HTTP_202_ACCEPTED)
+@internal_router.post("/ops/search-jobs/{job_id}/process", status_code=status.HTTP_202_ACCEPTED)
 def process_search_job_endpoint(job_id: int, db: Session = Depends(get_db)):
     search_job = db.query(SearchJob).filter(SearchJob.id == job_id).first()
     if not search_job:
@@ -164,3 +166,6 @@ def process_search_job_endpoint(job_id: int, db: Session = Depends(get_db)):
         payload={"search_job_id": job_id, "cep": search_job.cep},
     )
     return operation_job_payload(job)
+
+
+router.include_router(internal_router)

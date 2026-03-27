@@ -27,7 +27,7 @@ from src.services.tool_use import (
     submit_pharmacy_lead_service,
 )
 
-SERVER_NAME = "super-melhor-preco-farmacia"
+SERVER_NAME = "pricing-core"
 SERVER_VERSION = "0.1.0"
 
 

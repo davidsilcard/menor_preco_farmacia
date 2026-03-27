@@ -51,7 +51,7 @@ from src.services.tool_use import (
 )
 
 configure_logging()
-app = FastAPI(title="Monitor de Precos Jaragua do Sul")
+app = FastAPI(title="Pricing Core Farmacia")
 app.include_router(catalog_router)
 app.include_router(ops_router)
 LOGGER = get_logger(__name__)
@@ -142,7 +142,7 @@ def _validated_optional_cep(cep):
 @app.get("/")
 def read_root():
     return {
-        "message": "Monitor de Precos de Farmacias Ativo",
+        "message": "Pricing Core de Farmacias Ativo",
         "regiao": "Jaragua do Sul - SC",
         "active_cep": settings.CEP,
         "configured_default_cep": settings.CEP,

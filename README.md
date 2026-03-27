@@ -1,4 +1,4 @@
-# Super Melhor Preco Farmacia
+# Pricing Core Farmacia
 
 Este projeto nao e um backend tradicional para interface final. Ele existe para servir dados estruturados de comparacao de medicamentos para uma LLM usar como ferramenta.
 
@@ -11,6 +11,18 @@ O fluxo alvo e:
 5. a LLM responde com comparacao de precos, alternativas equivalentes e economia possivel
 
 Em outras palavras: esta API e a camada de dados e comparacao. A experiencia conversacional fica fora dela.
+
+## Direcao de monorepo
+
+Este repositorio passa a assumir uma estrutura de monorepo em fases:
+
+- `services/pricing-core`: backend operacional de comparacao, fila, coleta e retencao
+- `services/assistant-service`: orquestracao de canais, LLM, sessoes e chamadas HTTP para o `pricing-core`
+- `apps/frontend`: interface web do cliente
+- `infra/`: Compose, proxy reverso, deploy e infraestrutura local da fase 1
+
+Nesta primeira etapa, o codigo executavel do `pricing-core` ainda permanece na raiz do repositorio.
+Os diretorios do monorepo sao criados agora para fixar os limites da arquitetura sem quebrar o runtime atual.
 
 ## Objetivo
 
@@ -649,6 +661,18 @@ Executar o ciclo normal:
 uv run python -m src.run_operational_cycle
 ```
 
+Subir worker dedicado da fila:
+
+```bash
+uv run python -m src.worker_main
+```
+
+Executar scheduler one-shot para uso em cron/compose:
+
+```bash
+uv run python -m src.scheduler_main
+```
+
 Forcar coleta fora da janela:
 
 ```bash
@@ -661,6 +685,29 @@ uv run python -m src.run_operational_cycle --force-collection
 - `POST /ops/cycle/run`: executa coleta + retencao
 - `GET /ops/collection-plan`: mostra os itens que entrariam no lote
 - `GET /ops/metrics`: mostra saude operacional e distribuicao do sistema
+
+### Autenticacao interna
+
+Para fase 1, endpoints operacionais e `GET /health/ready` devem ser tratados como internos.
+
+Configuracao:
+
+- `INTERNAL_API_AUTH_ENABLED=true`
+- `INTERNAL_API_TOKEN=<segredo-interno>`
+
+Headers aceitos:
+
+- `Authorization: Bearer <segredo-interno>`
+- `X-Internal-API-Key: <segredo-interno>`
+
+Rotas publicas:
+
+- `GET /health/live`
+
+Rotas internas:
+
+- `GET /health/ready`
+- todos os endpoints `GET/POST /ops/*`
 
 ### Agendamento no Windows Task Scheduler
 
@@ -689,6 +736,43 @@ Se quiser uma execucao manual de suporte fora da janela, usar:
 ```powershell
 -m src.run_operational_cycle --force-collection
 ```
+
+### Fase 1 de servicos
+
+Para a fase 1 na mesma VPS, a topologia alvo e:
+
+- `pricing-core-api`: este backend HTTP
+- `pricing-core-worker`: processo dedicado de fila
+- `pricing-core-scheduler`: execucao agendada do ciclo operacional
+- `assistant-service`: LLM + canais de atendimento
+- `frontend`: interface web
+- `postgres`: banco interno
+
+Regra de fronteira:
+
+- `frontend`, `Telegram` e `WhatsApp` falam com o `assistant-service`
+- o `assistant-service` fala com o `pricing-core` por HTTP interno
+- o `mcp_server` deste repositorio continua opcional para uso interno, nao como borda publica de producao
+
+### Compose inicial da fase 1
+
+Artefatos disponiveis:
+
+- [Dockerfile](c:/Users/davidsc/projetos-python/super_melhor_preco_farmacia/Dockerfile)
+- [docker-compose.phase1.yml](c:/Users/davidsc/projetos-python/super_melhor_preco_farmacia/infra/docker-compose.phase1.yml)
+- [.env.phase1.example](c:/Users/davidsc/projetos-python/super_melhor_preco_farmacia/infra/.env.phase1.example)
+
+Subida base:
+
+```bash
+docker compose -f infra/docker-compose.phase1.yml up -d postgres pricing-core-api pricing-core-worker
+```
+
+Agendamento recomendado:
+
+- manter `pricing-core-scheduler` como servico `one-shot`
+- disparar pelo cron do host as `08:00` e `15:00`
+- usar `docker compose -f infra/docker-compose.phase1.yml run --rm pricing-core-scheduler`
 
 ### Politica operacional atual
 

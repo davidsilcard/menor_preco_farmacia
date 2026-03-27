@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+.uv-cache
+.playwright-mcp
+__pycache__
+*.py[oc]
+*.egg-info
+.env
+dist
+build
+wheels
+tests
+tmp*
+apps
+infra
+services

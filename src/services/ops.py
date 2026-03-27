@@ -16,7 +16,7 @@ from src.services.demand_tracking import queue_metrics
 from src.services.operation_jobs import operation_job_metrics
 from src.services.scraper_registry import SCRAPER_REGISTRY
 
-SERVICE_NAME = "super-melhor-preco-farmacia"
+SERVICE_NAME = "pricing-core"
 
 
 def live_health_payload():
@@ -34,10 +34,13 @@ def _config_readiness_payload():
         issues.append("CEP configurado invalido; esperado CEP com 8 digitos.")
     if settings.PRICE_RETENTION_DAYS <= 0:
         issues.append("PRICE_RETENTION_DAYS deve ser maior que zero.")
+    if settings.INTERNAL_API_AUTH_ENABLED and not (settings.INTERNAL_API_TOKEN or "").strip():
+        issues.append("INTERNAL_API_TOKEN deve ser definido quando INTERNAL_API_AUTH_ENABLED=true.")
     return {
         "status": "ok" if not issues else "error",
         "active_cep": settings.CEP,
         "configured_default_cep": settings.CEP,
+        "internal_api_auth_enabled": settings.INTERNAL_API_AUTH_ENABLED,
         "issues": issues,
     }
 

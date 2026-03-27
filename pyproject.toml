@@ -1,7 +1,7 @@
 [project]
-name = "super-melhor-preco-farmacia"
+name = "pricing-core"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pricing core orientado a ferramentas para comparacao de medicamentos por CEP."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
