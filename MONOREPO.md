@@ -31,6 +31,15 @@ Nao conversa diretamente com `pricing-core`.
 
 Arquivos de compose, proxy, deploy e operacao local/producao.
 
+### `deploy/`
+
+Artefatos de deploy Linux para VPS com varias aplicacoes:
+
+- `app.env.example` externo ao codigo
+- units e timer de `systemd`
+- exemplo de `Caddyfile`
+- guia para layout em `/home/david/apps/<app>` e `/etc/<app>/app.env`
+
 ## Estado atual
 
 O backend foi movido fisicamente para `services/pricing-core`.
@@ -43,3 +52,4 @@ Na raiz permanecem:
 - documentacao de topo do monorepo
 
 O `.env` principal continua centralizado na raiz para a fase 1, porque o compose sobe os servicos a partir desse ponto.
+Para deploy Linux sem containers, o padrao recomendado fica em `deploy/README.md` com configuracao em `/etc/<app>/app.env`.

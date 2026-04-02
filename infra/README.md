@@ -7,6 +7,18 @@ Arquivos atuais:
 - `docker-compose.phase1.yml`: `postgres`, `pricing-core-api`, `pricing-core-worker` e `pricing-core-scheduler`
 - `.env.phase1.example`: base de configuracao para a VPS
 
+Escopo deste diretório:
+
+- stack containerizada da fase 1
+- ambiente local ou VPS baseada em Docker
+
+Se a sua VPS hospeda varias aplicacoes, o padrao recomendado deste repositorio agora esta em `deploy/README.md`, com:
+
+- codigo em `/home/david/apps/super_melhor_preco_farmacia`
+- segredos em `/etc/super-melhor-preco-farmacia/app.env`
+- `systemd` para API, worker e scheduler
+- `Caddy` para dominio e TLS
+
 ## Subida completa na VPS
 
 Premissas:

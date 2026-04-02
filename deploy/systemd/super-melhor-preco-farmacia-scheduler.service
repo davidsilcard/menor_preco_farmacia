@@ -1,0 +1,11 @@
+[Unit]
+Description=Super Melhor Preco Farmacia Scheduler
+After=network.target
+
+[Service]
+Type=oneshot
+User=david
+Group=david
+WorkingDirectory=/home/david/apps/super_melhor_preco_farmacia/services/pricing-core
+EnvironmentFile=/etc/super-melhor-preco-farmacia/app.env
+ExecStart=/home/david/apps/super_melhor_preco_farmacia/services/pricing-core/.venv/bin/python -m src.scheduler_main

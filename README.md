@@ -13,7 +13,8 @@ Pontos de entrada principais:
 
 - documentacao do monorepo em `MONOREPO.md`
 - documentacao do backend em `services/pricing-core/README.md`
-- guia sequencial de subida da fase 1 em `infra/README.md`
+- guia de deploy Linux com `systemd` e `Caddy` em `deploy/README.md`
+- guia sequencial de subida containerizada da fase 1 em `infra/README.md`
 - compose da fase 1 em `infra/docker-compose.phase1.yml`
 
 Regra arquitetural:
@@ -24,5 +25,6 @@ Regra arquitetural:
 
 Subida da fase 1:
 
+- o padrao recomendado para VPS com varias aplicacoes esta em `deploy/README.md`
 - a sequencia operacional completa para VPS Linux esta em `infra/README.md`
 - ela cobre instalacao de Docker, clone do repo, configuracao do `.env`, `docker compose up`, validacao de healthchecks e cron do scheduler

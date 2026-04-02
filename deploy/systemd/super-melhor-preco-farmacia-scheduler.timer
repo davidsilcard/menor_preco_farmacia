@@ -1,0 +1,11 @@
+[Unit]
+Description=Agenda o ciclo operacional do Super Melhor Preco Farmacia
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 15:00:00
+Persistent=true
+Unit=super-melhor-preco-farmacia-scheduler.service
+
+[Install]
+WantedBy=timers.target
